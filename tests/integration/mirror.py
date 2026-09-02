@@ -36,4 +36,5 @@ class Mirror:
 
     def __exit__(self, *exc):
         self.server.shutdown()
+        self.server.server_close()
         shutil.rmtree(self.root, ignore_errors=True)

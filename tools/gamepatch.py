@@ -244,9 +244,14 @@ def rezip(src_dir: Path, zip_path: Path) -> None:
     subprocess.run(["zip", "-q", "-r", "-y", "-X", str(zip_path.resolve()), *entries], cwd=src_dir, check=True)
 
 
-def codesign_adhoc(app: Path) -> None:
-    run("codesign", "--force", "--deep", "--sign", "-", str(app))
-    run("codesign", "--verify", "--deep", "--strict", str(app))
+def codesign_adhoc(binaries: list[Path]) -> None:
+    """Re-sign only the binaries a patch modified: their linker signature was invalidated by
+    the byte change. No `--deep`: upstream is linker-signed with no bundle seals, and a deep
+    re-sign on the .app would manufacture `_CodeSignature/CodeResources` entries in every
+    nested bundle that the upstream zip does not have."""
+    for binary in binaries:
+        run("codesign", "--force", "--sign", "-", str(binary))
+        run("codesign", "--verify", "--strict", str(binary))
 
 
 def build(version: str, platform: str, patches_root: Path, cache: Path, work: Path, dist: Path) -> Path:
@@ -287,7 +292,7 @@ def build(version: str, platform: str, patches_root: Path, cache: Path, work: Pa
             record["patches"].append({"name": patch["name"], "binary": rel_binary, "sites": sites})
         binary.write_bytes(bytes(data))
 
-    codesign_adhoc(patched / "Electron.app")
+    codesign_adhoc([patched / rel_binary for rel_binary in by_binary])
     out_zip = dist / zip_name
     rezip(patched, out_zip)
     (dist / f"electron-v{version}-{platform}.patches.json").write_text(json.dumps(record, indent=2) + "\n")

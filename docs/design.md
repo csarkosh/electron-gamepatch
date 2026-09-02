@@ -119,8 +119,10 @@ any developer machine. For a given version:
    `vmaddr 0`, so address == file offset; the engine asserts this from `otool -l` rather than
    assuming it.
 3. For each site: read `len(expect)` bytes at `address + offset`; assert equal; write.
-4. Re-sign: `codesign --force --deep --sign - Electron.app`, then `codesign --verify --deep
-   --strict`.
+4. Re-sign only the binaries the patch modified: `codesign --force --sign - <binary>` then
+   `codesign --verify --strict <binary>`. No `--deep`: upstream is linker-signed with no
+   bundle seals, and a deep re-sign would add `_CodeSignature/CodeResources` entries the
+   upstream zip does not have.
 5. Re-zip with the same top-level layout as upstream (`Electron.app`, `LICENSE`,
    `LICENSES.chromium.html`, `version`), preserving symlinks and modes (`zip -ry`).
 6. Emit `SHASUMS256.txt` covering every asset in the release (patched and pass-through).
