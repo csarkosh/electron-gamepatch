@@ -125,10 +125,13 @@ def _pe_headers(data: bytes) -> tuple[int, int, int, int]:
     if data[e_lfanew : e_lfanew + 4] != b"PE\0\0":
         raise ValueError("not a PE file: no PE signature")
     coff = e_lfanew + 4
-    nsections, opt_size = struct.unpack_from("<H", data, coff + 2)[0], struct.unpack_from("<H", data, coff + 16)[0]
-    opt = coff + 20
-    if struct.unpack_from("<H", data, opt)[0] != 0x20B:
-        raise ValueError("not a PE32+ (64-bit) image")
+    try:
+        nsections, opt_size = struct.unpack_from("<H", data, coff + 2)[0], struct.unpack_from("<H", data, coff + 16)[0]
+        opt = coff + 20
+        if struct.unpack_from("<H", data, opt)[0] != 0x20B:
+            raise ValueError("not a PE32+ (64-bit) image")
+    except struct.error as e:
+        raise ValueError(f"truncated PE: {e}") from e
     return coff, opt, nsections, opt + opt_size
 
 
@@ -136,17 +139,23 @@ def pe_sections(data: bytes) -> list[dict]:
     """The section table: name, rva, vsize, rawoff, rawsize — in file order."""
     _, _, n, table = _pe_headers(data)
     sections = []
-    for i in range(n):
-        o = table + 40 * i
-        name = data[o : o + 8].rstrip(b"\0").decode("latin-1")
-        vsize, rva, rawsize, rawoff = struct.unpack_from("<IIII", data, o + 8)
-        sections.append({"name": name, "rva": rva, "vsize": vsize, "rawoff": rawoff, "rawsize": rawsize})
+    try:
+        for i in range(n):
+            o = table + 40 * i
+            name = data[o : o + 8].rstrip(b"\0").decode("latin-1")
+            vsize, rva, rawsize, rawoff = struct.unpack_from("<IIII", data, o + 8)
+            sections.append({"name": name, "rva": rva, "vsize": vsize, "rawoff": rawoff, "rawsize": rawsize})
+    except struct.error as e:
+        raise ValueError(f"truncated PE: {e}") from e
     return sections
 
 
 def pe_image_base(data: bytes) -> int:
     _, opt, _, _ = _pe_headers(data)
-    return struct.unpack_from("<Q", data, opt + 24)[0]
+    try:
+        return struct.unpack_from("<Q", data, opt + 24)[0]
+    except struct.error as e:
+        raise ValueError(f"truncated PE: {e}") from e
 
 
 def pe_rva_to_offset(sections: list[dict], rva: int) -> int:
@@ -168,26 +177,29 @@ def pe_codeview_id(data: bytes) -> str:
     """The Breakpad module id of a PE: the RSDS CodeView GUID (first three fields
     byte-swapped, as Breakpad prints them) followed by the age in upper-case hex."""
     _, opt, _, _ = _pe_headers(data)
-    nrva = struct.unpack_from("<I", data, opt + 108)[0]
-    if nrva <= 6:
-        raise ValueError("no debug directory")
-    debug_rva, debug_size = struct.unpack_from("<II", data, opt + 112 + 6 * 8)
-    if debug_size == 0:
-        raise ValueError("empty debug directory")
-    sections = pe_sections(data)
-    off = pe_rva_to_offset(sections, debug_rva)
-    for i in range(debug_size // 28):
-        entry = off + 28 * i
-        kind, size, _, raw = struct.unpack_from("<IIII", data, entry + 12)
-        if kind != 2:  # IMAGE_DEBUG_TYPE_CODEVIEW
-            continue
-        rec = data[raw : raw + size]
-        if rec[:4] != b"RSDS":
-            raise ValueError("CodeView record is not RSDS")
-        d1, d2, d3 = struct.unpack_from("<IHH", rec, 4)
-        rest = rec[12:20].hex().upper()
-        age = struct.unpack_from("<I", rec, 20)[0]
-        return f"{d1:08X}{d2:04X}{d3:04X}{rest}{age:X}"
+    try:
+        nrva = struct.unpack_from("<I", data, opt + 108)[0]
+        if nrva <= 6:
+            raise ValueError("no debug directory")
+        debug_rva, debug_size = struct.unpack_from("<II", data, opt + 112 + 6 * 8)
+        if debug_size == 0:
+            raise ValueError("empty debug directory")
+        sections = pe_sections(data)
+        off = pe_rva_to_offset(sections, debug_rva)
+        for i in range(debug_size // 28):
+            entry = off + 28 * i
+            kind, size, _, raw = struct.unpack_from("<IIII", data, entry + 12)
+            if kind != 2:  # IMAGE_DEBUG_TYPE_CODEVIEW
+                continue
+            rec = data[raw : raw + size]
+            if rec[:4] != b"RSDS":
+                raise ValueError("CodeView record is not RSDS")
+            d1, d2, d3 = struct.unpack_from("<IHH", rec, 4)
+            rest = rec[12:20].hex().upper()
+            age = struct.unpack_from("<I", rec, 20)[0]
+            return f"{d1:08X}{d2:04X}{d3:04X}{rest}{age:X}"
+    except struct.error as e:
+        raise ValueError(f"truncated PE: {e}") from e
     raise ValueError("no CodeView entry in the debug directory")
 
 

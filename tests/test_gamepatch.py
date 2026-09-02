@@ -1,5 +1,6 @@
 import hashlib
 import json
+import struct
 import sys
 import tempfile
 import unittest
@@ -312,9 +313,6 @@ class ReleaseNotes(unittest.TestCase):
         self.assertEqual(section, "- `win32-x64`")
 
 
-import struct
-
-
 def make_pe(sections, guid=b"\x6b\xd6\x76\xe5\xe1\x49\x88\x36\x4c\x4c\x44\x20\x50\x44\x42\x2e", age=1, image_base=0x140000000):
     """A minimal PE32+ image: DOS stub, COFF header, optional header with a debug
     directory, section table, then each section's raw bytes at its rawoff.
@@ -402,6 +400,20 @@ class PEHelpers(unittest.TestCase):
     def test_not_pe_raises(self):
         with self.assertRaises(ValueError):
             gamepatch.pe_sections(b"\xcf\xfa\xed\xfe" + b"\0" * 64)
+
+    def test_truncated_before_coff_header_raises_value_error(self):
+        # Valid MZ + e_lfanew + "PE\0\0", but nothing after: the COFF header
+        # itself is cut off, so struct.unpack_from would raise struct.error.
+        e_lfanew = 0x80
+        with self.assertRaises(ValueError):
+            gamepatch.pe_sections(self.pe[: e_lfanew + 4])
+
+    def test_truncated_before_section_table_raises_value_error(self):
+        # Valid COFF + optional header, but the section table itself is cut off.
+        e_lfanew, opt_size = 0x80, 240
+        sec_table = e_lfanew + 4 + 20 + opt_size
+        with self.assertRaises(ValueError):
+            gamepatch.pe_sections(self.pe[:sec_table])
 
 
 if __name__ == "__main__":
