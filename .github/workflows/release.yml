@@ -82,10 +82,37 @@ jobs:
           path: dist/
           if-no-files-found: error
 
-  publish:
+  probe-windows:
     needs: [plan, build]
-    # build is fail-fast: false; per-version legs must not block each other
     if: ${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.versions != '[]' }}
+    runs-on: windows-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ${{ fromJson(needs.plan.outputs.versions) }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: skip if already released
+        id: exists
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ matrix.version }}
+        run: |
+          set -eu
+          state=$(gh release view "v$VERSION" -R "$GITHUB_REPOSITORY" --json isDraft -q '.isDraft' 2>/dev/null || echo "missing")
+          if [ "$state" = "false" ]; then released=true; else released=false; fi
+          echo "released=$released" >> "$GITHUB_OUTPUT"
+      - uses: ./.github/actions/probe-windows
+        if: steps.exists.outputs.released == 'false'
+        with:
+          version: ${{ matrix.version }}
+
+  publish:
+    needs: [plan, build, probe-windows]
+    # build is fail-fast: false; per-version legs must not block each other
+    if: ${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.versions != '[]' && needs.probe-windows.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 90
     permissions:

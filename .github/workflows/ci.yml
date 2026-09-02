@@ -11,6 +11,8 @@ permissions:
 jobs:
   gate:
     runs-on: macos-14
+    outputs:
+      version: ${{ steps.pin.outputs.version }}
     steps:
       - uses: actions/checkout@v4
       - id: pin
@@ -19,3 +21,13 @@ jobs:
       - uses: ./.github/actions/gate
         with:
           version: ${{ steps.pin.outputs.version }}
+
+  probe-windows:
+    needs: gate
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/probe-windows
+        with:
+          version: ${{ needs.gate.outputs.version }}
