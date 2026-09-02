@@ -26,11 +26,15 @@ the mirror at us never breaks an install on a platform we have not patched yet. 
 artifacts (`chromedriver-*`, `ffmpeg-*`, `mksnapshot-*`, headers, hunspell) are not mirrored;
 tools that resolve them from `electron_mirror` must keep using upstream.
 
+Re-cuts: when a platform becomes patched for an already-published version, its zip and
+`SHASUMS256.txt` are replaced under the same tag and the release notes say so; verify with
+remote checksums as documented.
+
 ## Patches
 
 | Patch | Platforms | What it does |
 |---|---|---|
-| [pointerlock-noeject](patches/pointerlock-noeject/) | darwin-arm64 | Esc never ejects pointer lock; the page owns Esc and relocks instantly. |
+| [pointerlock-noeject](patches/pointerlock-noeject/) | darwin-arm64, win32-x64 | Esc never ejects pointer lock; the page owns Esc and relocks instantly. |
 
 ## How it works
 

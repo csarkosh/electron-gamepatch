@@ -352,6 +352,11 @@ class ReleaseNotes(unittest.TestCase):
         section = notes.split("## Pass-through (unmodified upstream)\n\n", 1)[1].split("\n\n## Use", 1)[0]
         self.assertEqual(section, "- `win32-x64`")
 
+    def test_recut_note_is_appended_when_given(self):
+        notes = gamepatch.release_notes("44.1.1", {"darwin-arm64": ["p"], "win32-x64": ["p"]}, ["linux-x64"], [{"name": "p", "summary": "s"}], recut_note="Re-cut 2026-09-03: win32-x64 now patched.")
+        self.assertTrue(notes.rstrip().endswith("Re-cut 2026-09-03: win32-x64 now patched."))
+        self.assertIn("`win32-x64` — p", notes)
+
 
 def make_pe(sections, guid=b"\x6b\xd6\x76\xe5\xe1\x49\x88\x36\x4c\x4c\x44\x20\x50\x44\x42\x2e", age=1, image_base=0x140000000):
     """A minimal PE32+ image: DOS stub, COFF header, optional header with a debug

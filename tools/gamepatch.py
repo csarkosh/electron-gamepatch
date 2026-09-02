@@ -540,12 +540,12 @@ def shasums(dist: Path) -> str:
     return format_shasums({p.name: sha256_file(p) for p in sorted(dist.glob("*.zip"))})
 
 
-def release_notes(version: str, patched: dict[str, list[str]], passthrough_platforms: list[str], patches: list[dict]) -> str:
+def release_notes(version: str, patched: dict[str, list[str]], passthrough_platforms: list[str], patches: list[dict], recut_note: str | None = None) -> str:
     summaries = {p["name"]: p["summary"] for p in patches}
     lines = [
         f"Republishes [Electron v{version}](https://github.com/electron/electron/releases/tag/v{version}) "
         "with game-oriented byte patches. Byte-identical to upstream except the documented patch sites "
-        "and the ad-hoc code signature that re-signing them requires.",
+        "and, on macOS, the ad-hoc code signature that re-signing them requires.",
         "",
         "## Patched",
     ]
@@ -566,10 +566,12 @@ def release_notes(version: str, patched: dict[str, list[str]], passthrough_platf
         "",
         f"Then `npm install electron@{version}`.",
     ]
+    if recut_note:
+        lines += ["", "---", "", recut_note]
     return "\n".join(lines) + "\n"
 
 
-def notes(version: str, patches_root: Path, dist: Path) -> str:
+def notes(version: str, patches_root: Path, dist: Path, recut_note: str | None = None) -> str:
     patched: dict[str, list[str]] = {}
     for rec_path in sorted(dist.glob("*.patches.json")):
         rec = json.loads(rec_path.read_text())
@@ -580,7 +582,7 @@ def notes(version: str, patches_root: Path, dist: Path) -> str:
         if m and m.group("v") == version:
             platforms.append(m.group("platform"))
     passthrough_platforms = [p for p in platforms if p not in patched]
-    return release_notes(version, patched, passthrough_platforms, load_patches(patches_root))
+    return release_notes(version, patched, passthrough_platforms, load_patches(patches_root), recut_note=recut_note)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -598,6 +600,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("shasums", help="print SHASUMS256.txt for dist/*.zip")
     n = sub.add_parser("notes", help="print release notes for dist/")
     n.add_argument("--version", required=True)
+    n.add_argument("--recut-note", default=None, help="dated re-cut line to append to the notes")
     c = sub.add_parser("check-dist", help="assert dist/ is ready to publish for --version")
     c.add_argument("--version", required=True)
     a = ap.parse_args(argv)
@@ -609,7 +612,7 @@ def main(argv: list[str] | None = None) -> int:
     elif a.cmd == "shasums":
         sys.stdout.write(shasums(a.dist))
     elif a.cmd == "notes":
-        sys.stdout.write(notes(a.version, a.patches, a.dist))
+        sys.stdout.write(notes(a.version, a.patches, a.dist, recut_note=a.recut_note))
     elif a.cmd == "check-dist":
         check_dist(a.version, a.cache, a.dist, a.patches)
     return 0

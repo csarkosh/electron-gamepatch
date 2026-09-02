@@ -9,6 +9,10 @@ on:
         description: "Electron version to republish, e.g. 44.1.1 (empty = whatever upstream released that we have not)"
         required: false
         default: ""
+      force:
+        description: "Rebuild and re-upload assets even if v<version> is already released (requires version)"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -30,6 +34,9 @@ jobs:
           REQUESTED: ${{ inputs.version }}
         run: |
           set -eu
+          if [ "${{ inputs.force }}" = "true" ] && [ -z "$REQUESTED" ]; then
+            echo "force needs a version" >&2; exit 1
+          fi
           if [ -n "$REQUESTED" ]; then
             [[ "$REQUESTED" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "version must look like 44.1.1, got: $REQUESTED" >&2; exit 1; }
             echo "versions=[\"$REQUESTED\"]" >> "$GITHUB_OUTPUT"
@@ -57,13 +64,16 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ matrix.version }}
+          FORCE: ${{ inputs.force }}
         run: |
           set -eu
           # build has read-only permissions: a draft is treated as not-released here, but never
           # deleted — deleting (so publish can recreate it) is publish's job, which has write access.
           state=$(gh release view "v$VERSION" -R "$GITHUB_REPOSITORY" --json isDraft -q '.isDraft' 2>/dev/null || echo "missing")
-          if [ "$state" = "false" ]; then
+          if [ "$state" = "false" ] && [ "${FORCE:-false}" != "true" ]; then
             released=true; echo "v$VERSION already released; skipping"
+          elif [ "$state" = "false" ]; then
+            released=false; echo "v$VERSION already released; force is set, rebuilding"
           elif [ "$state" = "true" ]; then
             released=false; echo "v$VERSION exists only as a draft; rebuilding (publish will delete and recreate it)"
           else
@@ -99,10 +109,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ matrix.version }}
+          FORCE: ${{ inputs.force }}
         run: |
           set -eu
           state=$(gh release view "v$VERSION" -R "$GITHUB_REPOSITORY" --json isDraft -q '.isDraft' 2>/dev/null || echo "missing")
-          if [ "$state" = "false" ]; then released=true; else released=false; fi
+          if [ "$state" = "false" ] && [ "${FORCE:-false}" != "true" ]; then released=true; else released=false; fi
           echo "released=$released" >> "$GITHUB_OUTPUT"
       - uses: ./.github/actions/probe-windows
         if: steps.exists.outputs.released == 'false'
@@ -131,13 +142,17 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ matrix.version }}
+          FORCE: ${{ inputs.force }}
         run: |
           set -eu
+          recut=false
           state=$(gh release view "v$VERSION" -R "$GITHUB_REPOSITORY" --json isDraft -q '.isDraft' 2>/dev/null || echo "missing")
-          if [ "$state" = "false" ]; then released=true
+          if [ "$state" = "false" ] && [ "${FORCE:-false}" != "true" ]; then released=true
+          elif [ "$state" = "false" ]; then echo "v$VERSION already released; force re-cutting"; released=false; recut=true
           elif [ "$state" = "true" ]; then echo "v$VERSION exists only as a draft; deleting it so publish can recreate it"; gh release delete "v$VERSION" -R "$GITHUB_REPOSITORY" --yes; released=false
           else released=false; fi
           echo "released=$released" >> "$GITHUB_OUTPUT"
+          echo "recut=$recut" >> "$GITHUB_OUTPUT"
       - uses: actions/download-artifact@v4
         if: steps.exists.outputs.released == 'false'
         with:
@@ -148,12 +163,18 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ matrix.version }}
+          RECUT: ${{ steps.exists.outputs.recut }}
         run: |
           set -eu
           python3 tools/gamepatch.py passthrough --version "$VERSION"
           python3 tools/gamepatch.py check-dist --version "$VERSION"
           python3 tools/gamepatch.py shasums > dist/SHASUMS256.txt
-          python3 tools/gamepatch.py notes --version "$VERSION" > notes.md
+          if [ "$RECUT" = "true" ]; then
+            python3 tools/gamepatch.py notes --version "$VERSION" \
+              --recut-note "Re-cut $(date -u +%F): win32-x64 now patched (assets and SHASUMS256.txt replaced)." > notes.md
+          else
+            python3 tools/gamepatch.py notes --version "$VERSION" > notes.md
+          fi
           cat dist/SHASUMS256.txt
       - name: publish release
         if: steps.exists.outputs.released == 'false'
@@ -162,7 +183,9 @@ jobs:
           VERSION: ${{ matrix.version }}
         run: |
           set -eu
-          gh release create "v$VERSION" -R "$GITHUB_REPOSITORY" \
-            --title "Electron v$VERSION, game-patched" \
-            --notes-file notes.md \
-            dist/*.zip dist/SHASUMS256.txt
+          if [ "${{ steps.exists.outputs.recut }}" = "true" ]; then
+            gh release upload "v$VERSION" -R "$GITHUB_REPOSITORY" --clobber dist/*.zip dist/SHASUMS256.txt
+            gh release edit "v$VERSION" -R "$GITHUB_REPOSITORY" --notes-file notes.md
+          else
+            gh release create "v$VERSION" -R "$GITHUB_REPOSITORY" --title "Electron v$VERSION, game-patched" --notes-file notes.md dist/*.zip dist/SHASUMS256.txt
+          fi
