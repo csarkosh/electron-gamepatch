@@ -1,5 +1,6 @@
 #!/bin/sh
 # run.sh <path/to/Electron.app> [rounds]  — exit 0 iff every round relocked first try and saw Esc while locked.
+# Windows: run.cmd (same contract).
 set -eu
 APP=$(cd "$1" 2>/dev/null && pwd) || { echo "run.sh: no such directory: $1" >&2; exit 2; }
 ROUNDS="${2:-3}"

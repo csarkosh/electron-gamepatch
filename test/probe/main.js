@@ -18,9 +18,17 @@ function click() {
   win.webContents.sendInputEvent({ type: 'mouseUp', ...ev });
 }
 function pressEscape() {
-  execFile('osascript', ['-e', 'tell application "System Events" to key code 53'], (err, so, se) => {
-    if (err) { out({ error: 'osascript-failed', detail: String(se || err) }); app.exit(3); }
-  });
+  // A real keystroke through the OS input queue, not sendInputEvent: Chromium's
+  // Esc handling for pointer lock runs in the browser process on real key events.
+  const onError = (err, so, se) => {
+    if (err) { out({ error: 'keystroke-failed', detail: String(se || err) }); app.exit(3); }
+  };
+  if (process.platform === 'win32') {
+    execFile('powershell', ['-NoProfile', '-NonInteractive', '-Command',
+      "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('{ESC}')"], onError);
+  } else {
+    execFile('osascript', ['-e', 'tell application "System Events" to key code 53'], onError);
+  }
 }
 function finish(code) {
   const ok = results.length === ROUNDS && results.every((r) => r.attempts === 1 && r.sawEscapeWhileLocked);
