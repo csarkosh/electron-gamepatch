@@ -30,9 +30,15 @@ runs:
     - name: behavioural probe (blocking)
       shell: bash
       run: |
-        set -eu
+        set -euo pipefail
         test/probe/run.sh "$PWD/work/darwin-arm64/patched/Electron.app" | tee probe.json
         echo "--- stock control (must FAIL; proves the probe can tell them apart on this runner)"
         if test/probe/run.sh "$PWD/work/darwin-arm64/stock/Electron.app"; then
           echo "stock passed the probe: the runner is not delivering real keystrokes, result is meaningless" >&2; exit 1
         fi
+    - name: upload probe result
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: probe-${{ inputs.version }}
+        path: probe.json

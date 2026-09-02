@@ -11,7 +11,11 @@ on:
         default: ""
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
   plan:
@@ -41,6 +45,7 @@ jobs:
     needs: plan
     if: needs.plan.outputs.versions != '[]'
     runs-on: macos-14
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -53,11 +58,18 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ matrix.version }}
         run: |
-          if gh release view "v$VERSION" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "released=true" >> "$GITHUB_OUTPUT"; echo "v$VERSION already released; skipping"
+          set -eu
+          # build has read-only permissions: a draft is treated as not-released here, but never
+          # deleted — deleting (so publish can recreate it) is publish's job, which has write access.
+          state=$(gh release view "v$VERSION" -R "$GITHUB_REPOSITORY" --json isDraft -q '.isDraft' 2>/dev/null || echo "missing")
+          if [ "$state" = "false" ]; then
+            released=true; echo "v$VERSION already released; skipping"
+          elif [ "$state" = "true" ]; then
+            released=false; echo "v$VERSION exists only as a draft; rebuilding (publish will delete and recreate it)"
           else
-            echo "released=false" >> "$GITHUB_OUTPUT"
+            released=false
           fi
+          echo "released=$released" >> "$GITHUB_OUTPUT"
       - name: gate — unit, build, verify, integration suite, probe (same action as ci.yml)
         if: steps.exists.outputs.released == 'false'
         uses: ./.github/actions/gate
@@ -75,6 +87,9 @@ jobs:
     # build is fail-fast: false; per-version legs must not block each other
     if: ${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.versions != '[]' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: write
     strategy:
       max-parallel: 1
       matrix:
@@ -87,11 +102,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ matrix.version }}
         run: |
-          if gh release view "v$VERSION" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "released=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "released=false" >> "$GITHUB_OUTPUT"
-          fi
+          set -eu
+          state=$(gh release view "v$VERSION" -R "$GITHUB_REPOSITORY" --json isDraft -q '.isDraft' 2>/dev/null || echo "missing")
+          if [ "$state" = "false" ]; then released=true
+          elif [ "$state" = "true" ]; then echo "v$VERSION exists only as a draft; deleting it so publish can recreate it"; gh release delete "v$VERSION" -R "$GITHUB_REPOSITORY" --yes; released=false
+          else released=false; fi
+          echo "released=$released" >> "$GITHUB_OUTPUT"
       - uses: actions/download-artifact@v4
         if: steps.exists.outputs.released == 'false'
         with:
@@ -105,6 +121,7 @@ jobs:
         run: |
           set -eu
           python3 tools/gamepatch.py passthrough --version "$VERSION"
+          python3 tools/gamepatch.py check-dist --version "$VERSION"
           python3 tools/gamepatch.py shasums > dist/SHASUMS256.txt
           python3 tools/gamepatch.py notes --version "$VERSION" > notes.md
           cat dist/SHASUMS256.txt
