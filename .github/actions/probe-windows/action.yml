@@ -24,8 +24,13 @@ runs:
         type probe-win32-x64.json
         echo --- stock control (must FAIL; proves the runner delivers real keystrokes)
         call test\probe\run.cmd "%CD%\probe-win32\stock" > probe-win32-x64-stock.json
-        if %ERRORLEVEL% equ 0 ( type probe-win32-x64-stock.json & echo stock passed the probe: the runner is not delivering real keystrokes, result is meaningless 1>&2 & exit /b 1 )
+        set STOCK_RC=%ERRORLEVEL%
         type probe-win32-x64-stock.json
+        rem Only exit code 1 ("ran and failed") is a control. 0 means the runner delivered no
+        rem keystrokes; 2 (timeout) and 3 (keystroke command failed) mean the probe never got to
+        rem measure anything, so a stock "failure" would prove nothing about the patched pass.
+        if %STOCK_RC% equ 0 ( echo stock passed the probe: the runner is not delivering real keystrokes, result is meaningless 1>&2 & exit /b 1 )
+        if %STOCK_RC% neq 1 ( echo stock control inconclusive ^(exit %STOCK_RC%: timeout or keystroke failure^) 1>&2 & exit /b 1 )
     - uses: actions/upload-artifact@v4
       if: always()
       with:
