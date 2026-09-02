@@ -64,7 +64,7 @@ class ApplySites(unittest.TestCase):
         self.assertEqual(data[8:12].hex(), "fd7b01a9")
         self.assertEqual(
             records,
-            [{"symbol": "f()", "offset": 4, "length": 4, "old": "f44fbea9", "new": "00008052", "asm": ["mov w0, #0x0"]}],
+            [{"symbol": "f()", "offset": 4, "vaddr": 4, "length": 4, "old": "f44fbea9", "new": "00008052", "asm": ["mov w0, #0x0"]}],
         )
 
     def test_offset_within_function(self):
@@ -89,6 +89,37 @@ class ApplySites(unittest.TestCase):
         data = bytearray(b"\x00" * 32)
         with self.assertRaises(ValueError):
             gamepatch.apply_sites(data, [dict(SITE, write="00")], self.resolver)
+
+
+class ApplySitesVaddr(unittest.TestCase):
+    def test_vaddr_is_translated_and_offset_is_file_space(self):
+        data = bytearray(b"\0" * 0x200 + bytes.fromhex("565753") + b"\x90" * 61)
+        # Symbols say the function is at RVA 0x1000, size 0x40; the file holds it at 0x200.
+        sections = [{"name": ".text", "rva": 0x1000, "vsize": 0x40, "rawoff": 0x200, "rawsize": 0x40}]
+        site = {"symbol": "f()", "offset": 0, "expect": "565753", "write": "31c0c3", "asm": ["xor eax, eax", "ret"]}
+        resolve = lambda name: (gamepatch.pe_rva_to_offset(sections, 0x1000), 0x40)
+        records = gamepatch.apply_sites(data, [site], resolve, to_vaddr=lambda off: gamepatch.pe_offset_to_rva(sections, off))
+        self.assertEqual(records[0]["offset"], 0x200)
+        self.assertEqual(records[0]["vaddr"], 0x1000)
+        self.assertEqual(data[0x200:0x203], bytes.fromhex("31c0c3"))
+
+
+class Formats(unittest.TestCase):
+    def test_platform_prefix_selects_format(self):
+        self.assertEqual(gamepatch.binary_format("darwin-arm64").name, "macho")
+        self.assertEqual(gamepatch.binary_format("darwin-x64").name, "macho")
+        self.assertEqual(gamepatch.binary_format("win32-x64").name, "pe")
+        with self.assertRaises(SystemExit):
+            gamepatch.binary_format("linux-x64")
+
+    def test_pe_format_resolves_through_sections_and_identity(self):
+        pe = make_pe([(".text", 0x1000, b"\0" * 64 + bytes.fromhex("565753") + b"\x90" * 61)])
+        fmt = gamepatch.binary_format("win32-x64")
+        ctx = fmt.open(pe)
+        self.assertEqual(fmt.identity_of(Path("unused"), pe), "E576D66B49E136884C4C44205044422E1")
+        self.assertEqual(fmt.to_offset(ctx, 0x1040), 0x240)
+        self.assertEqual(fmt.to_vaddr(ctx, 0x240), 0x1040)
+        self.assertFalse(fmt.signs)
 
 
 class LoadPatch(unittest.TestCase):

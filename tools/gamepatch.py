@@ -48,9 +48,13 @@ def resolve_symbol(funcs: dict[str, list[tuple[int, int]]], name: str) -> tuple[
     return matches[0]
 
 
-def apply_sites(data: bytearray, sites: list[dict], resolve: Callable[[str], tuple[int, int]]) -> list[dict]:
-    """Patch every site into `data` (file offsets == symbol addresses) and return a record per site.
+def apply_sites(data: bytearray, sites: list[dict], resolve: Callable[[str], tuple[int, int]],
+                to_vaddr: Callable[[int], int] = lambda offset: offset) -> list[dict]:
+    """Patch every site into `data` and return a record per site.
 
+    `resolve(symbol)` returns (file offset, size) of the function; `to_vaddr(offset)` maps a
+    file offset back to the virtual address a disassembler wants (identity for Mach-O, whose
+    __TEXT is at vmaddr 0 / fileoff 0; section translation for PE).
     Every site is checked before any byte is written, so a bad `expect` leaves `data` untouched.
     """
     planned = []
@@ -69,7 +73,7 @@ def apply_sites(data: bytearray, sites: list[dict], resolve: Callable[[str], tup
     records = []
     for site, offset, expect, write in planned:
         data[offset : offset + len(write)] = write
-        records.append({"symbol": site["symbol"], "offset": offset, "length": len(write),
+        records.append({"symbol": site["symbol"], "offset": offset, "vaddr": to_vaddr(offset), "length": len(write),
                         "old": expect.hex(), "new": write.hex(), "asm": list(site["asm"])})
     return records
 
@@ -373,13 +377,58 @@ def codesign_adhoc(binaries: list[Path]) -> None:
             shutil.rmtree(scratch, ignore_errors=True)
 
 
+class _MachO:
+    name, signs = "macho", True
+
+    def open(self, data: bytes):
+        return None
+
+    def check_binary(self, binary: Path) -> None:
+        assert_text_at_zero(binary)
+
+    def identity_of(self, binary: Path, data: bytes) -> str:
+        return sym_module_id_from_uuid(macho_uuid(binary))
+
+    def to_offset(self, ctx, address: int) -> int:
+        return address
+
+    def to_vaddr(self, ctx, offset: int) -> int:
+        return offset
+
+
+class _PE:
+    name, signs = "pe", False
+
+    def open(self, data: bytes):
+        return pe_sections(data)
+
+    def check_binary(self, binary: Path) -> None:
+        pass
+
+    def identity_of(self, binary: Path, data: bytes) -> str:
+        return pe_codeview_id(data)
+
+    def to_offset(self, sections, rva: int) -> int:
+        return pe_rva_to_offset(sections, rva)
+
+    def to_vaddr(self, sections, offset: int) -> int:
+        return pe_offset_to_rva(sections, offset)
+
+
+def binary_format(platform: str):
+    if platform.startswith("darwin-") or platform.startswith("mas-"):
+        return _MachO()
+    if platform.startswith("win32-"):
+        return _PE()
+    raise SystemExit(f"{platform}: only darwin-*/mas-* (Mach-O) and win32-* (PE) builds are implemented")
+
+
 def build(version: str, platform: str, patches_root: Path, cache: Path, work: Path, dist: Path) -> Path:
     """Produce dist/electron-v<version>-<platform>.zip with every patch that targets `platform`."""
     targets = [(p, p["targets"][platform]) for p in load_patches(patches_root) if platform in p["targets"]]
     if not targets:
         raise SystemExit(f"no patch targets {platform}; it is a pass-through platform")
-    if not platform.startswith("darwin-"):
-        raise SystemExit(f"{platform}: only darwin-* builds are implemented (signing, Mach-O checks)")
+    fmt = binary_format(platform)
 
     zip_name = f"electron-v{version}-{platform}.zip"
     stock_zip = fetch_upstream(version, zip_name, cache)
@@ -397,21 +446,28 @@ def build(version: str, platform: str, patches_root: Path, cache: Path, work: Pa
 
     for rel_binary, group in by_binary.items():
         binary = patched / rel_binary
-        assert_text_at_zero(binary)
+        fmt.check_binary(binary)
         with open_sym(symbols_zip, binary.name) as sym:
             module_id, funcs = parse_sym(sym)
-        uuid = macho_uuid(binary)
-        if sym_module_id_from_uuid(uuid) != module_id:
-            raise ValueError(f"{binary.name}: UUID {uuid} does not match symbols MODULE {module_id}")
         data = bytearray(binary.read_bytes())
+        ctx = fmt.open(bytes(data))
+        identity = fmt.identity_of(binary, bytes(data))
+        if identity != module_id:
+            raise ValueError(f"{binary.name}: binary identity {identity} does not match symbols MODULE {module_id}")
+
+        def resolve(name: str, funcs=funcs, ctx=ctx) -> tuple[int, int]:
+            address, size = resolve_symbol(funcs, name)
+            return fmt.to_offset(ctx, address), size
+
         for patch, target in group:
-            sites = apply_sites(data, target["sites"], lambda name: resolve_symbol(funcs, name))
+            sites = apply_sites(data, target["sites"], resolve, to_vaddr=lambda off, ctx=ctx: fmt.to_vaddr(ctx, off))
             for s in sites:
-                log(f"{patch['name']}: {s['symbol']} @ {s['offset']:#x}: {s['old']} -> {s['new']}")
+                log(f"{patch['name']}: {s['symbol']} @ {s['offset']:#x} (vaddr {s['vaddr']:#x}): {s['old']} -> {s['new']}")
             record["patches"].append({"name": patch["name"], "binary": rel_binary, "sites": sites})
         binary.write_bytes(bytes(data))
 
-    codesign_adhoc([patched / rel_binary for rel_binary in by_binary])
+    if fmt.signs:
+        codesign_adhoc([patched / rel_binary for rel_binary in by_binary])
     out_zip = dist / zip_name
     rezip(patched, out_zip)
     (dist / f"electron-v{version}-{platform}.patches.json").write_text(json.dumps(record, indent=2) + "\n")
