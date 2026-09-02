@@ -1,9 +1,12 @@
 # How this repository works
 
 **Product.** GitHub releases whose tag and asset names mirror upstream Electron, where the
-`darwin-arm64` zip (so far) has small byte patches applied and every other platform zip is
-upstream's, untouched. Consumers point `electron_mirror` at us and set
-`electron_use_remote_checksums=1`. That contract is in `docs/design.md` and must not change.
+`darwin-arm64` zip (so far) has small byte patches applied and every other
+`electron-v<ver>-<platform>.zip` upstream publishes is present, untouched. Other upstream
+artifacts (`chromedriver-*`, `ffmpeg-*`, `mksnapshot-*`, headers, hunspell) are not mirrored;
+tools that resolve them from `electron_mirror` must keep using upstream. Consumers point
+`electron_mirror` at us and set `electron_use_remote_checksums=1`. That contract is in
+`docs/design.md` and must not change.
 
 **Pipeline.** `.github/workflows/release.yml`:
 1. `plan` — `tools/release_plan.py` compares upstream stable tags with ours and picks

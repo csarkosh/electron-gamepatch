@@ -20,9 +20,11 @@ the `electron` package verifies downloads against a bundled checksum list by def
 would reject our bytes; with it set, it verifies against the `SHASUMS256.txt` in our release.
 
 Every release tag mirrors upstream (`v44.1.1` republishes Electron `v44.1.1`), asset names
-are identical, and every platform zip upstream publishes is present: **patched where a patch
-exists, passed through byte-identical everywhere else**, so pointing the mirror at us never
-breaks an install on a platform we have not patched yet.
+are identical, and every `electron-v<ver>-<platform>.zip` upstream publishes is present:
+**patched where a patch exists, passed through byte-identical everywhere else**, so pointing
+the mirror at us never breaks an install on a platform we have not patched yet. Other upstream
+artifacts (`chromedriver-*`, `ffmpeg-*`, `mksnapshot-*`, headers, hunspell) are not mirrored;
+tools that resolve them from `electron_mirror` must keep using upstream.
 
 ## Patches
 

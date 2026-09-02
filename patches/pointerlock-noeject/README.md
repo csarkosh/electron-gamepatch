@@ -26,3 +26,7 @@ the window.
 **Side effects.** Because `HandleUserPressedEscape()` now returns `false`, Esc also falls
 through to the fullscreen controller: in an HTML-fullscreen window Esc still exits
 fullscreen. Desktop shells should size the window themselves rather than use HTML fullscreen.
+
+The ad-hoc re-signing this patch requires changes the framework's codesign identifier (from
+`Electron Framework` to a hash-suffixed one) and drops the `linker-signed` flag; harmless for
+consumers who re-sign with `electron-builder`, visible in `codesign -dvvv`.

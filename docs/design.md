@@ -37,11 +37,14 @@ This is the load-bearing part; everything else serves it.
   *bundled* `checksums.json` by default, which would reject our bytes; consumers set
   `electron_use_remote_checksums=1`, which makes `@electron/get` fetch `SHASUMS256.txt` from
   the mirror instead.
-- **Pass-through for unpatched platforms.** Each release also re-uploads upstream's other
-  `electron-*` zips unmodified (darwin-x64, mas-*, win32-*, linux-*; ~1 GB per release, within
-  GitHub's per-asset 2 GB limit). Without this, pointing `electron_mirror` at us breaks
-  `npm install` on every machine we have no patch for. The README states the rule:
-  *patched where a patch exists, byte-identical to upstream everywhere else.*
+- **Pass-through for unpatched platforms.** Each release also re-uploads every
+  `electron-v<ver>-<platform>.zip` upstream publishes that we have not patched, unmodified
+  (darwin-x64, mas-*, win32-*, linux-*; ~1 GB per release, within GitHub's per-asset 2 GB
+  limit). Without this, pointing `electron_mirror` at us breaks `npm install` on every
+  machine we have no patch for. The README states the rule: *patched where a patch exists,
+  byte-identical to upstream everywhere else.* Other upstream artifacts (`chromedriver-*`,
+  `ffmpeg-*`, `mksnapshot-*`, headers, hunspell) are not mirrored; tools that resolve them
+  from `electron_mirror` must keep using upstream.
 - **Tracked line: latest stable major** (44.x today). Every patch release on it is republished.
   Older majors are not tracked; a manual dispatch can backfill any version.
 
@@ -61,11 +64,18 @@ patches/
     patch.json          declarative: per platform-arch, the symbol, expected bytes, replacement
     README.md           what it changes, why, the upstream source it patches, measured effect
 tools/
-  gamepatch.py          the engine (Python 3, stdlib only)
+  gamepatch.py          the engine (Python 3, stdlib only); also emits check-dist's assertions
   verify.py             post-patch disassembly assertion + launch smoke
+  release_plan.py        which upstream versions to build, given upstream's and our own tags
 test/probe/             the spike's probe app + run.sh: measures relock time with a real Esc
-.github/workflows/
-  release.yml           cron + manual dispatch → build → verify → GitHub release
+dist/
+  electron-v<ver>-<platform>.zip           patched or pass-through, per platform
+  electron-v<ver>-<platform>.patches.json  build record for a patched platform: sites, bytes, asm
+.github/
+  workflows/
+    release.yml          cron + manual dispatch → plan → build → publish (pass-through, check-dist, SHASUMS, notes)
+    ci.yml                the same gate action, on every push and PR, against the pinned version
+  actions/gate/           composite action: unit tests → build → verify → integration suite → probe
 .agents/                agent onboarding for future patches (see below)
 AGENTS.md               points at .agents/
 README.md               consumer setup, the contract above, patch list
@@ -80,6 +90,7 @@ One `patch.json` per patch. Data, not code:
 {
   "name": "pointerlock-noeject",
   "summary": "Esc never ejects pointer lock; the page owns Esc.",
+  "upstream_source": "chrome/browser/ui/exclusive_access/pointer_lock_controller.cc",
   "targets": {
     "darwin-arm64": {
       "binary": "Electron.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Electron Framework",
@@ -89,7 +100,7 @@ One `patch.json` per patch. Data, not code:
           "offset": 0,
           "expect": "f44fbea9fd7b01a9",
           "write":  "00008052c0035fd6",
-          "asm":    "mov w0, #0 ; ret"
+          "asm":    ["mov w0, #0x0", "ret"]
         }
       ]
     }
@@ -103,8 +114,15 @@ One `patch.json` per patch. Data, not code:
 - `expect` is asserted before writing. A compiler change in a new Electron alters the
   prologue → the assertion fails → the run is red and nothing is published. That is the
   designed failure mode; a human re-derives the bytes.
-- `asm` is documentation and the input to `verify.py`'s disassembly check.
+- `asm` is a list of instructions, one per element, as `verify.normalize_disasm` renders
+  `llvm-objdump` output (mnemonic + operands, no comments) — the input to `verify.py`'s
+  disassembly check, and documentation.
+- `upstream_source` (optional) is a free-text string naming the Chromium/Electron source file
+  the patch targets, for humans; validated non-empty when present, not otherwise parsed.
 - Platforms not listed in `targets` are pass-through.
+- **Release notes are generated from each `patch.json`'s `summary` plus a link to its patch
+  directory** (`tools/gamepatch.py notes`) — not from the patch READMEs. Keep `summary`
+  accurate; the README is for humans reading the repo, not for what ships in a release body.
 
 ## The engine (`tools/gamepatch.py`)
 
@@ -185,9 +203,13 @@ breaks any of these turns the gate red before it can reach a release.
 - Job `build` (matrix over versions, `macos-14`, free for public repos; needed for
   `codesign`, `llvm-objdump`, `dwarfdump`): the `gate` action (unit → engine → verify →
   integration suite → probe) → upload artifacts.
-- Job `publish`: create the release `v<ver>` with all assets and `SHASUMS256.txt`, release
-  notes generated from the patch READMEs plus the upstream release link. Idempotent: an
-  existing tag is skipped, never overwritten.
+- Job `publish`: `passthrough` (refuses to ship a patched platform that was not built),
+  `check-dist` (asserts dist/ matches upstream's asset set, pass-through hashes, and
+  patches.json pairing before anything is uploaded), `shasums`, `notes` — release notes
+  generated from each `patch.json`'s `summary` plus a link to its patch directory, plus the
+  upstream release link — then create the release `v<ver>` with all assets and
+  `SHASUMS256.txt`. Idempotent: an existing (non-draft) tag is skipped; a draft is deleted
+  and recreated.
 - No secrets beyond `GITHUB_TOKEN`.
 
 ## `.agents/` — onboarding for the next patch

@@ -27,3 +27,8 @@ which is fine: `expect`/`write` only need to match each other.
 `otool`, `xcrun llvm-objdump`, `python3`. `ubuntu-latest` is used only for pass-through and
 publishing. Windows binaries can be patched on any runner once the PE offset translation
 exists; there is no signing step.
+
+**Codesign identity after ad-hoc re-signing.** The ad-hoc re-sign changes the framework's
+codesign identifier (from `Electron Framework` to a hash-suffixed one) and drops the
+`linker-signed` flag; harmless for consumers who re-sign with `electron-builder`, visible in
+`codesign -dvvv`.
