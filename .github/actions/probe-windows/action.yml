@@ -20,11 +20,11 @@ runs:
       shell: cmd
       run: |
         call test\probe\run.cmd "%CD%\probe-win32\patched" > probe-win32-x64.json
-        if errorlevel 1 ( type probe-win32-x64.json & echo patched electron.exe FAILED the probe 1>&2 & exit /b 1 )
+        if %ERRORLEVEL% neq 0 ( type probe-win32-x64.json & echo patched electron.exe FAILED the probe 1>&2 & exit /b 1 )
         type probe-win32-x64.json
         echo --- stock control (must FAIL; proves the runner delivers real keystrokes)
         call test\probe\run.cmd "%CD%\probe-win32\stock" > probe-win32-x64-stock.json
-        if not errorlevel 1 ( type probe-win32-x64-stock.json & echo stock passed the probe: the runner is not delivering real keystrokes, result is meaningless 1>&2 & exit /b 1 )
+        if %ERRORLEVEL% equ 0 ( type probe-win32-x64-stock.json & echo stock passed the probe: the runner is not delivering real keystrokes, result is meaningless 1>&2 & exit /b 1 )
         type probe-win32-x64-stock.json
     - uses: actions/upload-artifact@v4
       if: always()
