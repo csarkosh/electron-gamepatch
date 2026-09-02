@@ -184,9 +184,18 @@ jobs:
           VERSION: ${{ matrix.version }}
         run: |
           set -eu
+          # dist/*.patches.json ships too: the per-platform record of every patched site (offset,
+          # vaddr, old and new bytes) is what an auditor needs to re-derive the diff from the
+          # release alone. check-dist has already refused any record without its sibling zip.
           if [ "${{ steps.exists.outputs.recut }}" = "true" ]; then
-            gh release upload "v$VERSION" -R "$GITHUB_REPOSITORY" --clobber dist/*.zip dist/SHASUMS256.txt
+            # Two uploads, zips first. `gh release upload` uploads the files of one call
+            # concurrently, so a single call gives no ordering guarantee: the new SHASUMS256.txt
+            # could land while the old zips are still up, and a consumer downloading in that
+            # window would check a stale zip against the new list and reject it. Splitting makes
+            # the checksum file strictly last, narrowing that window to the gap between two calls.
+            gh release upload "v$VERSION" -R "$GITHUB_REPOSITORY" --clobber dist/*.zip dist/*.patches.json
+            gh release upload "v$VERSION" -R "$GITHUB_REPOSITORY" --clobber dist/SHASUMS256.txt
             gh release edit "v$VERSION" -R "$GITHUB_REPOSITORY" --notes-file notes.md
           else
-            gh release create "v$VERSION" -R "$GITHUB_REPOSITORY" --title "Electron v$VERSION, game-patched" --notes-file notes.md dist/*.zip dist/SHASUMS256.txt
+            gh release create "v$VERSION" -R "$GITHUB_REPOSITORY" --title "Electron v$VERSION, game-patched" --notes-file notes.md dist/*.zip dist/*.patches.json dist/SHASUMS256.txt
           fi
