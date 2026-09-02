@@ -39,10 +39,12 @@ remote checksums as documented.
 ## How it works
 
 Electron publishes Breakpad symbols for every release. `tools/gamepatch.py` resolves each
-patch's function by name in that release's `.sym`, asserts the expected original bytes,
-writes the replacement, re-signs the modified binary, re-zips. `tools/verify.py` disassembles
-the result, proves the binary differs from upstream only at the declared sites, checks the
-signature of the shipped bytes, and launches it. `test/probe/` measures the effect with a real
+patch's function by name in that release's `.sym`, asserts the expected original bytes, writes
+the replacement, re-zips — and, on macOS, re-signs the modified binary; Windows binaries are
+unsigned upstream and stay unsigned. `tools/verify.py` disassembles the result and proves the
+binary differs from upstream only at the declared sites on every platform; on macOS it also
+checks the signature of the shipped bytes and launches it, while for `win32-*` the launch
+proof is a separate Windows CI leg (`test/probe/`), which measures the effect with a real
 keypress. `.github/workflows/release.yml` does this daily for every new upstream release on
 the tracked (latest stable) major.
 
