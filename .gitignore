@@ -1,0 +1,7 @@
+work/
+dist/
+cache/
+node_modules/
+*.log
+.DS_Store
+__pycache__/

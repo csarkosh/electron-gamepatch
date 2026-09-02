@@ -1,0 +1,19 @@
+{
+  "name": "pointerlock-noeject",
+  "summary": "Esc never ejects pointer lock; the page owns Esc and releases the lock itself, so relocking is instant.",
+  "upstream_source": "chrome/browser/ui/exclusive_access/pointer_lock_controller.cc",
+  "targets": {
+    "darwin-arm64": {
+      "binary": "Electron.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Electron Framework",
+      "sites": [
+        {
+          "symbol": "PointerLockController::HandleUserPressedEscape()",
+          "offset": 0,
+          "expect": "f44fbea9fd7b01a9",
+          "write": "00008052c0035fd6",
+          "asm": ["mov w0, #0x0", "ret"]
+        }
+      ]
+    }
+  }
+}
