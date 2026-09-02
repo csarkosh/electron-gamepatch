@@ -1,0 +1,33 @@
+<!doctype html><title>gamepatch probe</title>
+<body style="margin:0;background:#223;color:#eee;font:16px monospace">
+<div id="log" style="padding:12px;white-space:pre"></div>
+<script>
+const t0 = performance.now();
+const logEl = document.getElementById('log');
+let lastUnlock = null;
+function log(kind, extra = {}) {
+  const now = performance.now();
+  const m = { kind, t: +(now - t0).toFixed(1), locked: !!document.pointerLockElement,
+              sinceUnlock: lastUnlock == null ? null : +(now - lastUnlock).toFixed(1), ...extra };
+  logEl.textContent += JSON.stringify(m) + '\n';
+  window.probe.send(m);
+}
+document.addEventListener('pointerlockchange', () => {
+  if (!document.pointerLockElement) lastUnlock = performance.now();
+  log('pointerlockchange');
+});
+document.addEventListener('pointerlockerror', () => log('pointerlockerror'));
+document.addEventListener('mousedown', () => {
+  if (document.pointerLockElement) return;
+  const p = document.body.requestPointerLock({ unadjustedMovement: false });
+  log('request');
+  if (p && p.then) p.then(() => log('request-resolved'), (e) => log('request-rejected', { name: e.name, msg: e.message }));
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  log('keydown-escape');
+  // What a game does under pointerlock-noeject: release the lock itself, page-initiated.
+  if (document.pointerLockElement) { document.exitPointerLock(); log('page-exit'); }
+});
+log('ready');
+</script>
