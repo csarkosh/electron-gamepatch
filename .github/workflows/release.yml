@@ -111,7 +111,10 @@ jobs:
 
   publish:
     needs: [plan, build, probe-windows]
-    # build is fail-fast: false; per-version legs must not block each other
+    # build is fail-fast: false so per-version build legs do not block each other, but a
+    # Windows probe failure for any version withholds publishing for all of them:
+    # needs.probe-windows.result is one result for the whole matrix. The cron publishes one
+    # version at a time in practice; dispatch per version to recover.
     if: ${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.versions != '[]' && needs.probe-windows.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 90
