@@ -8,16 +8,21 @@
    its dataoff/datasize fields, which live in the header before the blob starts; and the
    __LINKEDIT LC_SEGMENT_64 command's vmsize/filesize fields are excluded, since a shrunk
    ad-hoc signature shrinks the segment codesign declares it lives in).
-3. Launch smoke: the patched Electron starts and reports its version.
+3. Signature: the patched binary's signature verifies, on a scratch copy outside the bundle
+   (codesign refuses to verify a framework's main executable in place: it treats the path as
+   the bundle and complains the bundle has no sealed resources).
+4. Launch smoke: the patched Electron starts and reports its version.
 """
 from __future__ import annotations
 
 import argparse
 import json
 import re
+import shutil
 import struct
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 _INSN = re.compile(r"^\s*[0-9a-f]+:\s+[0-9a-f]{8}\s+(.*)$")
@@ -130,6 +135,26 @@ def check_sites(stock_bin: Path, patched_bin: Path, sites: list[dict]) -> None:
     log(f"{patched_bin.name}: {len(diffs)} differing range(s), all inside declared sites; code signature excluded from {limit:#x}")
 
 
+def signature_valid(binary: Path) -> None:
+    """`codesign --verify --strict` at the in-bundle path fails even on an untouched, never
+    re-signed binary: codesign treats a framework's designated main executable as the bundle
+    itself and refuses ("code has no resources but signature indicates they must be
+    present"), since the file next to it isn't sealed the way a `--deep`-signed bundle would
+    be. Verify on a copy in a scratch directory with no bundle context instead — the same
+    technique `gamepatch.codesign_adhoc` uses to sign it — so this actually checks the bytes
+    that get copied back into the shipped zip."""
+    scratch = Path(tempfile.mkdtemp(prefix="verify-sig-"))
+    try:
+        tmp = scratch / binary.name
+        shutil.copyfile(binary, tmp)
+        result = subprocess.run(["codesign", "--verify", "--strict", str(tmp)], text=True, capture_output=True)
+        if result.returncode != 0:
+            raise SystemExit(f"{binary.name}: signature invalid: {result.stderr}")
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+    log(f"signature (shipped bytes): {binary.name}  OK")
+
+
 def launch_smoke(app: Path, version: str) -> None:
     exe = app / "Contents/MacOS/Electron"
     out = subprocess.run([str(exe), "--version"], check=True, text=True, capture_output=True, timeout=60).stdout.strip()
@@ -152,6 +177,8 @@ def main(argv: list[str] | None = None) -> int:
         by_binary.setdefault(patch["binary"], []).extend(patch["sites"])
     for rel, sites in by_binary.items():
         check_sites(stock / rel, patched / rel, sites)
+    for rel in by_binary:
+        signature_valid(patched / rel)
     launch_smoke(patched / "Electron.app", a.version)
     return 0
 

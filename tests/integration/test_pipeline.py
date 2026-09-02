@@ -21,8 +21,28 @@ PLATFORM = "darwin-arm64"
 CACHE, WORK, DIST = ROOT / "cache", ROOT / "work", ROOT / "dist"
 
 
-def zip_entries(path: Path) -> set[str]:
-    return set(subprocess.run(["unzip", "-Z1", str(path)], check=True, text=True, capture_output=True).stdout.split("\n")) - {""}
+def zip_entries(path: Path) -> set[tuple[str, str]]:
+    """(perms, name) for every entry in `path`, from `zipinfo`'s long listing.
+
+    Names alone (`unzip -Z1`) would let a symlink silently become a regular file, or a mode
+    change go unnoticed, and the comparison would still pass. `zipinfo`/`unzip -Z` lines look
+    like `lrwxr-xr-x  3.0 unx  35 bx stor 80-Jan-01 00:00 <name>`; the header (`Archive: ...`,
+    `Zip file size: ...`) and trailer (`583 files, ... compressed:`) lines don't start with a
+    permission string, so filtering on that first character sorts them out. Names can contain
+    spaces (`Electron Framework`), so the name is taken as everything after the fixed 8-field
+    prefix, not a plain `.split()`.
+    """
+    lines = subprocess.run(["unzip", "-Z", str(path)], check=True, text=True, capture_output=True).stdout.splitlines()
+    entries: set[tuple[str, str]] = set()
+    for line in lines:
+        if not line or line[0] not in "-dlpsbc":
+            continue
+        parts = line.split(maxsplit=8)
+        if len(parts) != 9:
+            continue
+        perms, name = parts[0], parts[8]
+        entries.add((perms, name))
+    return entries
 
 
 class Pipeline(unittest.TestCase):
@@ -40,13 +60,19 @@ class Pipeline(unittest.TestCase):
             self.assertTrue(patch["sites"], f"{patch['name']} applied no sites")
 
     def test_zip_layout_matches_upstream(self):
-        """Same entries as upstream's zip: the consumer's extractor must see an identical tree (symlinks included)."""
-        self.assertEqual(zip_entries(self.out_zip), zip_entries(self.stock_zip))
+        """Same entries, same type and mode, as upstream's zip: the consumer's extractor must see an
+        identical tree. Comparing names alone would miss a symlink rewritten as a regular file or a
+        mode change; comparing (perms, name) pairs catches both."""
+        stock_entries = zip_entries(self.stock_zip)
+        self.assertTrue(any(perms.startswith("l") for perms, _ in stock_entries),
+                         "fixture sanity: expected at least one symlink entry in the upstream zip")
+        self.assertEqual(zip_entries(self.out_zip), stock_entries)
 
     def test_patched_binary_passes_verify(self):
         for patch in self.record["patches"]:
             rel = patch["binary"]
             verify.check_sites(WORK / PLATFORM / "stock" / rel, WORK / PLATFORM / "patched" / rel, patch["sites"])
+            verify.signature_valid(WORK / PLATFORM / "patched" / rel)
 
     def test_launches_and_reports_version(self):
         verify.launch_smoke(WORK / PLATFORM / "patched" / "Electron.app", PIN)

@@ -126,7 +126,10 @@ any developer machine. For a given version:
    bundle tree, then the signed bytes are copied back in place: codesign auto-detects a
    framework's designated main executable from its neighbours and seals the whole bundle
    even without `--deep`, so a plain, bundle-free path is required to get a bare embedded
-   signature on the binary alone.
+   signature on the binary alone. The `codesign --verify --strict` at that scratch path proves
+   the signed bytes about to be copied back are valid; it does not by itself prove the copy
+   back into the bundle landed correctly, which is why `tools/verify.py` separately
+   re-verifies the shipped, in-bundle bytes the same way (see Verification, below).
 5. Re-zip with the same top-level layout as upstream (`Electron.app`, `LICENSE`,
    `LICENSES.chromium.html`, `version`), preserving symlinks and modes (`zip -ry`).
 6. Emit `SHASUMS256.txt` covering every asset in the release (patched and pass-through).
@@ -139,8 +142,10 @@ Runs after the engine, before publishing:
    the instructions match `asm`.
 2. **Diff budget**: byte-compare patched vs upstream binary; assert the *only* differing
    ranges are the declared sites.
-3. **Launch smoke**: `Electron.app/Contents/MacOS/Electron --version` prints `v<ver>`.
-4. **Functional probe** (`test/probe/run.sh`): lock → real Esc via `osascript` → relock;
+3. **Signature of the shipped bytes**: verified by copying the patched binary out of the
+   bundle, since codesign cannot verify a framework's main executable in place.
+4. **Launch smoke**: `Electron.app/Contents/MacOS/Electron --version` prints `v<ver>`.
+5. **Functional probe** (`test/probe/run.sh`): lock → real Esc via `osascript` → relock;
    assert the page saw `keydown Escape` while locked and relocked on the first attempt.
    A blocking gate, locally and in CI, run with the stock build as a control so a runner
    that swallows keystrokes cannot produce a false pass. Whether GitHub's `macos-14` image
