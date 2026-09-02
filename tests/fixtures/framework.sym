@@ -1,0 +1,9 @@
+MODULE mac arm64 4C4C448B55553144A1795775D5EF8BF60 Electron Framework
+FILE 307515 /worker/build/a57cd20bf35394bf/root/out/x/../../chrome/browser/ui/exclusive_access/pointer_lock_controller.cc
+FUNC 903c5cc fc 0 PointerLockController::RequestToLockPointer(content::WebContents*, bool, bool)
+903c5cc 20 49 307515
+FUNC 903ca3c 44 0 PointerLockController::HandleUserPressedEscape()
+903ca3c c 103 307515
+FUNC m 903ca80 4 0 PointerLockController::HandleUserHeldEscape()
+FUNC 903c508 84 0 PointerLockController::~PointerLockController()
+FUNC 903c58c 4 0 PointerLockController::~PointerLockController()
