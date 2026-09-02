@@ -72,6 +72,8 @@ jobs:
 
   publish:
     needs: [plan, build]
+    # build is fail-fast: false; per-version legs must not block each other
+    if: ${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.versions != '[]' }}
     runs-on: ubuntu-latest
     strategy:
       max-parallel: 1
