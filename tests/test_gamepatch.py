@@ -120,5 +120,49 @@ class Shasums(unittest.TestCase):
         self.assertEqual(gamepatch.parse_shasums("11 *a.zip\n22 *b.zip\n\n"), {"a.zip": "11", "b.zip": "22"})
 
 
+class UpstreamAssets(unittest.TestCase):
+    RELEASE = {"assets": [
+        {"name": "electron-v44.1.1-darwin-arm64.zip"},
+        {"name": "electron-v44.1.1-darwin-arm64-symbols.zip"},
+        {"name": "electron-v44.1.1-win32-x64.zip"},
+        {"name": "chromedriver-v44.1.1-linux-x64.zip"},
+        {"name": "electron-v44.1.1-linux-armv7l.zip"},
+        {"name": "SHASUMS256.txt"},
+    ]}
+
+    def test_only_electron_platform_zips(self):
+        self.assertEqual(
+            gamepatch.upstream_asset_names(self.RELEASE, "44.1.1"),
+            ["electron-v44.1.1-darwin-arm64.zip", "electron-v44.1.1-linux-armv7l.zip", "electron-v44.1.1-win32-x64.zip"],
+        )
+
+
+class MachOHelpers(unittest.TestCase):
+    def test_sym_module_id_from_uuid(self):
+        self.assertEqual(
+            gamepatch.sym_module_id_from_uuid("4C4C448B-5555-3144-A179-5775D5EF8BF6"),
+            "4C4C448B55553144A1795775D5EF8BF60",
+        )
+
+    def test_text_segment_at_zero(self):
+        out = "Load command 1\n      cmd LC_SEGMENT_64\n  segname __TEXT\n   vmaddr 0x0000000000000000\n   vmsize 0x0b4d4000\n  fileoff 0\n filesize 189612032\n"
+        self.assertTrue(gamepatch.text_segment_is_at_zero(out))
+
+    def test_text_segment_not_at_zero(self):
+        out = "  segname __TEXT\n   vmaddr 0x0000000100000000\n   vmsize 0x1000\n  fileoff 0\n"
+        self.assertFalse(gamepatch.text_segment_is_at_zero(out))
+
+
+class ReleaseNotes(unittest.TestCase):
+    def test_lists_patched_and_passthrough(self):
+        patches = [{"name": "pointerlock-noeject", "summary": "Esc never ejects pointer lock."}]
+        notes = gamepatch.release_notes("44.1.1", {"darwin-arm64": ["pointerlock-noeject"]}, ["win32-x64"], patches)
+        self.assertIn("Electron v44.1.1", notes)
+        self.assertIn("https://github.com/electron/electron/releases/tag/v44.1.1", notes)
+        self.assertIn("`darwin-arm64` — pointerlock-noeject", notes)
+        self.assertIn("`win32-x64`", notes)
+        self.assertIn("electron_use_remote_checksums=1", notes)
+
+
 if __name__ == "__main__":
     unittest.main()

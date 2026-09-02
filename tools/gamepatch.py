@@ -108,3 +108,280 @@ def parse_shasums(text: str) -> dict[str, str]:
             sha, name = line.split(maxsplit=1)
             entries[name.lstrip("*").strip()] = sha
     return entries
+
+
+# ---------------------------------------------------------------- IO layer
+
+import argparse
+import hashlib
+import io
+import os
+import shutil
+import subprocess
+import sys
+import urllib.request
+import zipfile
+
+UPSTREAM_DOWNLOAD = "https://github.com/electron/electron/releases/download"
+UPSTREAM_API = "https://api.github.com/repos/electron/electron/releases/tags"
+_PLATFORM_ZIP = re.compile(r"^electron-v(?P<v>[^-]+)-(darwin|mas|win32|linux)-[a-z0-9]+\.zip$")
+
+
+def log(msg: str) -> None:
+    print(f"[gamepatch] {msg}", file=sys.stderr, flush=True)
+
+
+def sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _request(url: str) -> urllib.request.Request:
+    headers = {"User-Agent": "electron-gamepatch"}
+    token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    if token and url.startswith("https://api.github.com/"):
+        headers["Authorization"] = f"Bearer {token}"
+    return urllib.request.Request(url, headers=headers)
+
+
+def download(url: str, dest: Path) -> Path:
+    """Stream `url` to `dest` unless it already exists. Partial downloads never leave a `dest`."""
+    if dest.exists():
+        return dest
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_suffix(dest.suffix + ".part")
+    log(f"downloading {url}")
+    with urllib.request.urlopen(_request(url)) as r, open(tmp, "wb") as f:
+        shutil.copyfileobj(r, f, 1 << 20)
+    tmp.rename(dest)
+    return dest
+
+
+def upstream_shasums(version: str, cache: Path) -> dict[str, str]:
+    path = download(f"{UPSTREAM_DOWNLOAD}/v{version}/SHASUMS256.txt", cache / f"v{version}" / "SHASUMS256.txt")
+    return parse_shasums(path.read_text())
+
+
+def fetch_upstream(version: str, filename: str, cache: Path) -> Path:
+    """Download one upstream release asset into the cache and verify it against upstream's SHASUMS256.txt."""
+    expected = upstream_shasums(version, cache).get(filename)
+    if expected is None:
+        raise LookupError(f"{filename} is not in upstream SHASUMS256.txt for v{version}")
+    path = download(f"{UPSTREAM_DOWNLOAD}/v{version}/{filename}", cache / f"v{version}" / filename)
+    actual = sha256_file(path)
+    if actual != expected:
+        path.unlink()
+        raise ValueError(f"{filename}: sha256 {actual} != upstream {expected} (deleted; re-run)")
+    return path
+
+
+def upstream_asset_names(release_json: dict, version: str) -> list[str]:
+    """The `electron-v<version>-<platform>.zip` assets of an upstream release, sorted."""
+    names = [a["name"] for a in release_json.get("assets", [])]
+    return sorted(n for n in names if (m := _PLATFORM_ZIP.match(n)) and m.group("v") == version)
+
+
+def upstream_release(version: str) -> dict:
+    with urllib.request.urlopen(_request(f"{UPSTREAM_API}/v{version}")) as r:
+        return json.load(r)
+
+
+def run(*cmd: str, capture: bool = False) -> str:
+    log("$ " + " ".join(cmd))
+    result = subprocess.run(cmd, check=True, text=True, capture_output=capture)
+    return result.stdout if capture else ""
+
+
+def sym_module_id_from_uuid(uuid: str) -> str:
+    """Breakpad MODULE ids are the Mach-O UUID without dashes, upper-case, plus an age digit of 0."""
+    return uuid.replace("-", "").upper() + "0"
+
+
+def macho_uuid(binary: Path) -> str:
+    out = run("dwarfdump", "--uuid", str(binary), capture=True)
+    m = re.search(r"UUID: ([0-9A-Fa-f-]{36})", out)
+    if not m:
+        raise ValueError(f"no UUID in dwarfdump output for {binary}")
+    return m.group(1)
+
+
+def text_segment_is_at_zero(otool_output: str) -> bool:
+    """True when __TEXT has vmaddr 0 and fileoff 0, i.e. symbol address == file offset."""
+    m = re.search(r"segname __TEXT\n\s+vmaddr (0x[0-9a-f]+)\n\s+vmsize 0x[0-9a-f]+\n\s+fileoff (\d+)", otool_output)
+    return bool(m) and int(m.group(1), 16) == 0 and int(m.group(2)) == 0
+
+
+def assert_text_at_zero(binary: Path) -> None:
+    if not text_segment_is_at_zero(run("otool", "-l", str(binary), capture=True)):
+        raise ValueError(f"{binary}: __TEXT is not at vmaddr 0 / fileoff 0; symbol addresses are not file offsets")
+
+
+def open_sym(symbols_zip: Path, binary_basename: str) -> io.TextIOWrapper:
+    """A text stream over `<basename>.sym` inside an upstream symbols zip."""
+    zf = zipfile.ZipFile(symbols_zip)
+    wanted = f"/{binary_basename}.sym"
+    names = [n for n in zf.namelist() if n.endswith(wanted)]
+    if len(names) != 1:
+        raise LookupError(f"{symbols_zip.name}: expected one {wanted}, found {names}")
+    return io.TextIOWrapper(zf.open(names[0]), encoding="utf-8", errors="replace")
+
+
+def unzip(zip_path: Path, dest: Path) -> None:
+    """`unzip`, not zipfile: the Python module drops symlinks and modes, and Electron.app has both."""
+    shutil.rmtree(dest, ignore_errors=True)
+    dest.mkdir(parents=True)
+    run("unzip", "-q", str(zip_path), "-d", str(dest))
+
+
+def rezip(src_dir: Path, zip_path: Path) -> None:
+    """Re-create the upstream zip layout (entries at the root) preserving symlinks (-y) and no extra attrs (-X)."""
+    zip_path.parent.mkdir(parents=True, exist_ok=True)
+    zip_path.unlink(missing_ok=True)
+    entries = sorted(p.name for p in src_dir.iterdir())
+    subprocess.run(["zip", "-q", "-r", "-y", "-X", str(zip_path.resolve()), *entries], cwd=src_dir, check=True)
+
+
+def codesign_adhoc(app: Path) -> None:
+    run("codesign", "--force", "--deep", "--sign", "-", str(app))
+    run("codesign", "--verify", "--deep", "--strict", str(app))
+
+
+def build(version: str, platform: str, patches_root: Path, cache: Path, work: Path, dist: Path) -> Path:
+    """Produce dist/electron-v<version>-<platform>.zip with every patch that targets `platform`."""
+    targets = [(p, p["targets"][platform]) for p in load_patches(patches_root) if platform in p["targets"]]
+    if not targets:
+        raise SystemExit(f"no patch targets {platform}; it is a pass-through platform")
+    if not platform.startswith("darwin-"):
+        raise SystemExit(f"{platform}: only darwin-* builds are implemented (signing, Mach-O checks)")
+
+    zip_name = f"electron-v{version}-{platform}.zip"
+    stock_zip = fetch_upstream(version, zip_name, cache)
+    symbols_zip = fetch_upstream(version, f"electron-v{version}-{platform}-symbols.zip", cache)
+
+    stock, patched = work / platform / "stock", work / platform / "patched"
+    unzip(stock_zip, stock)
+    shutil.rmtree(patched, ignore_errors=True)
+    shutil.copytree(stock, patched, symlinks=True)
+
+    record = {"version": version, "platform": platform, "patches": []}
+    by_binary: dict[str, list[tuple[dict, dict]]] = {}
+    for patch, target in targets:
+        by_binary.setdefault(target["binary"], []).append((patch, target))
+
+    for rel_binary, group in by_binary.items():
+        binary = patched / rel_binary
+        assert_text_at_zero(binary)
+        with open_sym(symbols_zip, binary.name) as sym:
+            module_id, funcs = parse_sym(sym)
+        uuid = macho_uuid(binary)
+        if sym_module_id_from_uuid(uuid) != module_id:
+            raise ValueError(f"{binary.name}: UUID {uuid} does not match symbols MODULE {module_id}")
+        data = bytearray(binary.read_bytes())
+        for patch, target in group:
+            sites = apply_sites(data, target["sites"], lambda name: resolve_symbol(funcs, name))
+            for s in sites:
+                log(f"{patch['name']}: {s['symbol']} @ {s['offset']:#x}: {s['old']} -> {s['new']}")
+            record["patches"].append({"name": patch["name"], "binary": rel_binary, "sites": sites})
+        binary.write_bytes(bytes(data))
+
+    codesign_adhoc(patched / "Electron.app")
+    out_zip = dist / zip_name
+    rezip(patched, out_zip)
+    (dist / f"electron-v{version}-{platform}.patches.json").write_text(json.dumps(record, indent=2) + "\n")
+    log(f"wrote {out_zip} ({out_zip.stat().st_size >> 20} MiB)")
+    return out_zip
+
+
+def passthrough(version: str, cache: Path, dist: Path) -> list[str]:
+    """Copy every upstream platform zip that dist/ does not already hold, verified against upstream."""
+    dist.mkdir(parents=True, exist_ok=True)
+    copied = []
+    for name in upstream_asset_names(upstream_release(version), version):
+        if (dist / name).exists():
+            continue
+        shutil.copy2(fetch_upstream(version, name, cache), dist / name)
+        copied.append(name)
+        log(f"pass-through {name}")
+    return copied
+
+
+def shasums(dist: Path) -> str:
+    return format_shasums({p.name: sha256_file(p) for p in sorted(dist.glob("*.zip"))})
+
+
+def release_notes(version: str, patched: dict[str, list[str]], passthrough_platforms: list[str], patches: list[dict]) -> str:
+    summaries = {p["name"]: p["summary"] for p in patches}
+    lines = [
+        f"Republishes [Electron v{version}](https://github.com/electron/electron/releases/tag/v{version}) "
+        "with game-oriented byte patches. Byte-identical to upstream except the documented patch sites "
+        "and the ad-hoc code signature that re-signing them requires.",
+        "",
+        "## Patched",
+    ]
+    for platform, names in sorted(patched.items()):
+        for name in names:
+            lines.append(f"- `{platform}` — {name}: {summaries.get(name, '')} ([details](https://github.com/csarkosh/electron-gamepatch/tree/main/patches/{name}))")
+    lines += ["", "## Pass-through (unmodified upstream)", ""]
+    lines += [f"- `{p}`" for p in sorted(passthrough_platforms)] or ["- none"]
+    lines += [
+        "",
+        "## Use",
+        "",
+        "```ini",
+        "# .npmrc",
+        "electron_mirror=https://github.com/csarkosh/electron-gamepatch/releases/download/",
+        "electron_use_remote_checksums=1",
+        "```",
+        "",
+        f"Then `npm install electron@{version}`.",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def notes(version: str, patches_root: Path, dist: Path) -> str:
+    patched: dict[str, list[str]] = {}
+    for rec_path in sorted(dist.glob("*.patches.json")):
+        rec = json.loads(rec_path.read_text())
+        patched[rec["platform"]] = [p["name"] for p in rec["patches"]]
+    platforms = []
+    for p in sorted(dist.glob("*.zip")):
+        m = _PLATFORM_ZIP.match(p.name)
+        if m:
+            platforms.append(p.name[len(f"electron-v{version}-") : -len(".zip")])
+    passthrough_platforms = [p for p in platforms if p not in patched]
+    return release_notes(version, patched, passthrough_platforms, load_patches(patches_root))
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(prog="gamepatch", description=__doc__)
+    ap.add_argument("--patches", type=Path, default=Path("patches"))
+    ap.add_argument("--cache", type=Path, default=Path("cache"))
+    ap.add_argument("--work", type=Path, default=Path("work"))
+    ap.add_argument("--dist", type=Path, default=Path("dist"))
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    b = sub.add_parser("build", help="patch one platform zip for one version")
+    b.add_argument("--version", required=True)
+    b.add_argument("--platform", required=True)
+    p = sub.add_parser("passthrough", help="add upstream zips for every platform not in dist/")
+    p.add_argument("--version", required=True)
+    sub.add_parser("shasums", help="print SHASUMS256.txt for dist/*.zip")
+    n = sub.add_parser("notes", help="print release notes for dist/")
+    n.add_argument("--version", required=True)
+    a = ap.parse_args(argv)
+    if a.cmd == "build":
+        a.dist.mkdir(parents=True, exist_ok=True)
+        build(a.version, a.platform, a.patches, a.cache, a.work, a.dist)
+    elif a.cmd == "passthrough":
+        passthrough(a.version, a.cache, a.dist)
+    elif a.cmd == "shasums":
+        sys.stdout.write(shasums(a.dist))
+    elif a.cmd == "notes":
+        sys.stdout.write(notes(a.version, a.patches, a.dist))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
