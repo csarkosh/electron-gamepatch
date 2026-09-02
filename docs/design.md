@@ -243,3 +243,42 @@ None blocking. Two decisions deferred to when they matter:
   "latest stable major" once the shell exists.
 - Windows/Linux patches: the engine and contract support them; each needs its own
   disassembly spike to fill `targets`.
+
+## First release (2026-09-02)
+
+`v44.1.1` — the first live run, `csarkosh/electron-gamepatch` public, `gh workflow run
+release.yml -f version=44.1.1`.
+
+- Run: https://github.com/csarkosh/electron-gamepatch/actions/runs/33587984577 —
+  `plan` → `build (44.1.1)` (gate: unit tests, build, verify, integration suite, blocking
+  probe with a stock control) → `publish (44.1.1)`, all green, ~2 minutes total on
+  `macos-14` + `ubuntu-latest`. The probe on the runner: patched relock gaps 7/11/24 ms,
+  `ok: true`; the stock control correctly failed the same probe (`ok: false`,
+  `sawEscapeWhileLocked: false`, ~1.5s gaps) — the `osascript` synthetic-keystroke unknown
+  is resolved on GitHub's `macos-14` image.
+- Release assets: `electron-v44.1.1-darwin-arm64.zip`, `electron-v44.1.1-darwin-x64.zip`,
+  `electron-v44.1.1-linux-arm64.zip`, `electron-v44.1.1-linux-x64.zip`,
+  `electron-v44.1.1-mas-arm64.zip`, `electron-v44.1.1-mas-x64.zip`,
+  `electron-v44.1.1-win32-arm64.zip`, `electron-v44.1.1-win32-x64.zip`, `SHASUMS256.txt`.
+- Consumer test (`npm install electron@44.1.1` through the mirror, against a scratch
+  project outside this repo): probe summary
+  `{"summary":[{"round":1,"relockGapMs":14,"attempts":1,"sawEscapeWhileLocked":true},
+  {"round":2,"relockGapMs":10,"attempts":1,"sawEscapeWhileLocked":true},
+  {"round":3,"relockGapMs":14,"attempts":1,"sawEscapeWhileLocked":true}],"rounds":3,
+  "ok":true}`, exit 0. One methodology note for whoever repeats this: triggering the
+  package's lazy first-download via a bare `node -e "require('electron')"` does not see
+  `.npmrc`'s `electron_mirror` — `@electron/get` only reads `npm_config_electron_mirror`
+  -style environment variables, which npm injects only into processes it spawns itself
+  (e.g. `npm exec`, or any real install/build script). A bare `node` invocation has none of
+  those and silently falls back to stock `github.com/electron/electron`. Routing the same
+  `require('electron')` through `npm exec` reproduced the real flow and picked up the
+  patched build correctly.
+- Real game (`tools/electron-spike/run-game.sh` in the `fps` repo, against the patched
+  `Electron.app` pulled from the consumer install above, `fps` dev stack on `:5173`/`:8081`):
+  `{"main":"resume-click","relockMs":13,"wallMs":13,"locked":true,"menuOpen":false}` —
+  under the 50 ms bar, pointer lock reacquired on the same click that dismisses the pause
+  menu. `initial-lock` at 85 ms, `after-esc` (menu open) at 22 ms.
+
+Plug-and-play is proven end to end: a real npm consumer installing `electron@44.1.1`
+through this repo's mirror gets the patched binary with no code changes on its side, and
+the real game confirms the escape-key cooldown is gone.
