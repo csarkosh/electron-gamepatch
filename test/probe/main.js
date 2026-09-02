@@ -1,5 +1,6 @@
-// Probe: lock -> real Esc (osascript, goes through the window server like a keyboard) ->
-// click every 100 ms until relocked. Reports the gap and whether the page saw Esc while locked.
+// Probe: lock -> real Esc (osascript on macOS, PowerShell SendKeys on Windows, goes through
+// the window server like a keyboard) -> click every 100 ms until relocked. Reports the gap and
+// whether the page saw Esc while locked.
 const { app, BrowserWindow, ipcMain } = require('electron');
 const { execFile } = require('child_process');
 const path = require('path');

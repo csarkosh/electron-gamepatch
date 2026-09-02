@@ -96,8 +96,8 @@ class Pipeline(unittest.TestCase):
             self.assertIn(patch["name"], notes)
         self.assertIn("electron_use_remote_checksums=1", notes)
 
-    def test_upstream_publishes_every_passthrough_platform_we_expect(self):
-        """Pass-through relies on upstream's asset names; if they change, publish would silently ship fewer platforms."""
+    def test_upstream_publishes_every_platform_zip_we_expect(self):
+        """These are the platform zips we expect upstream to publish; if the names change, publish would silently ship fewer platforms."""
         names = gamepatch.upstream_asset_names(gamepatch.upstream_release(PIN), PIN)
         for platform in ("darwin-arm64", "darwin-x64", "win32-x64", "linux-x64"):
             self.assertIn(f"electron-v{PIN}-{platform}.zip", names)
