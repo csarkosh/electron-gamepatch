@@ -19,6 +19,11 @@ class Mirror:
                 shutil.copy2(p, rel / p.name)
         handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(self.root))
         handler.log_message = lambda *a, **k: None  # type: ignore[attr-defined]
+        # Speak HTTP/1.1, as the real release CDN does. Under the default HTTP/1.0 the server
+        # closes the socket after the body, and Node 22.23.1's bundled undici asserts
+        # (assert(!this.paused) in Parser.finish) when that end arrives while the download is
+        # paused for backpressure — install.js then dies before writing anything.
+        handler.protocol_version = "HTTP/1.1"  # type: ignore[attr-defined]
         self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
 
