@@ -15,9 +15,32 @@ Disassembly of section __TEXT,__text:
 """
 
 
+def _objdump(insn: str) -> str:
+    """One disassembled instruction wrapped in a minimal objdump listing, matching verify._INSN."""
+    return f" 903ca3c: 52800000     \t{insn}\n"
+
+
 class Disasm(unittest.TestCase):
     def test_normalizes_mnemonic_and_operands_only(self):
         self.assertEqual(verify.normalize_disasm(OBJDUMP), ["mov w0, #0x0", "ret"])
+
+    def test_decimal_and_hex_zero_immediates_normalize_identically(self):
+        self.assertEqual(verify.normalize_disasm(_objdump("mov\tw0, #0")), ["mov w0, #0x0"])
+        self.assertEqual(verify.normalize_disasm(_objdump("mov\tw0, #0x0")), ["mov w0, #0x0"])
+
+    def test_decimal_and_hex_nonzero_immediates_normalize_identically(self):
+        self.assertEqual(verify.normalize_disasm(_objdump("mov\tw1, #0x8                ; =8")), ["mov w1, #0x8"])
+        self.assertEqual(verify.normalize_disasm(_objdump("mov\tw1, #8")), ["mov w1, #0x8"])
+
+    def test_multiple_immediates_on_one_line(self):
+        self.assertEqual(verify.normalize_disasm(_objdump("movk\tw9, #0x13, lsl #16")), ["movk w9, #0x13, lsl #0x10"])
+
+    def test_negative_immediate_stays_negative(self):
+        self.assertEqual(verify.normalize_disasm(_objdump("sub\tsp, sp, #-16")), ["sub sp, sp, #-0x10"])
+
+    def test_register_only_lines_are_unchanged(self):
+        self.assertEqual(verify.normalize_disasm(_objdump("ret")), ["ret"])
+        self.assertEqual(verify.normalize_disasm(_objdump("mov\tx0, x1")), ["mov x0, x1"])
 
 
 class Ranges(unittest.TestCase):

@@ -26,20 +26,29 @@ import tempfile
 from pathlib import Path
 
 _INSN = re.compile(r"^\s*[0-9a-f]+:\s+[0-9a-f]{8}\s+(.*)$")
+_IMMEDIATE = re.compile(r"#(-?)(0x[0-9a-fA-F]+|\d+)")
 
 
 def log(msg: str) -> None:
     print(f"[verify] {msg}", file=sys.stderr, flush=True)
 
 
+def _canonicalize_immediate(m: re.Match) -> str:
+    sign, value = m.group(1), m.group(2)
+    return f"#{sign}0x{int(value, 0):x}"
+
+
 def normalize_disasm(objdump_output: str) -> list[str]:
-    """['mov w0, #0x0', 'ret'] from llvm-objdump text: mnemonic + operands, comments stripped."""
+    """['mov w0, #0x0', 'ret'] from llvm-objdump text: mnemonic + operands, comments stripped,
+    immediates canonicalized to lowercase hex (`#0` and `#0x0` both become `#0x0`) so the same
+    instruction compares equal across llvm-objdump versions that spell immediates differently."""
     out = []
     for line in objdump_output.splitlines():
         m = _INSN.match(line)
         if m:
             text = m.group(1).split(";")[0]
-            out.append(" ".join(text.replace("\t", " ").split()))
+            text = " ".join(text.replace("\t", " ").split())
+            out.append(_IMMEDIATE.sub(_canonicalize_immediate, text))
     return out
 
 
