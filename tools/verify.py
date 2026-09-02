@@ -4,8 +4,10 @@
 1. Disassembly: each patched site reads as the instructions the patch declares.
 2. Diff budget: the patched binary differs from upstream only inside declared sites
    (the code-signature blob at the end of the file is excluded: re-signing rewrites it;
-   the LC_CODE_SIGNATURE load command itself is also excluded: re-signing can change its
-   dataoff/datasize fields, which live in the header before the blob starts).
+   the LC_CODE_SIGNATURE load command itself is also excluded, since re-signing can change
+   its dataoff/datasize fields, which live in the header before the blob starts; and the
+   __LINKEDIT LC_SEGMENT_64 command's vmsize/filesize fields are excluded, since a shrunk
+   ad-hoc signature shrinks the segment codesign declares it lives in).
 3. Launch smoke: the patched Electron starts and reports its version.
 """
 from __future__ import annotations
@@ -68,6 +70,25 @@ def load_command_ranges(header: bytes, cmd: int = 0x1D) -> list[tuple[int, int]]
     return ranges
 
 
+def codesign_owned_ranges(header: bytes) -> list[tuple[int, int]]:
+    """Byte ranges in a Mach-O header that `codesign --force` may legitimately rewrite.
+
+    - The whole LC_CODE_SIGNATURE (0x1d) command: re-signing can change its dataoff/datasize.
+    - Inside the LC_SEGMENT_64 (0x19) command for segname "__LINKEDIT": only the 8-byte vmsize
+      field (command offset 32-40) and the 8-byte filesize field (command offset 48-56).
+      segment_command_64 layout: cmd(4) cmdsize(4) segname(16) vmaddr(8) vmsize(8) fileoff(8)
+      filesize(8) ... . A shrunk ad-hoc signature shrinks __LINKEDIT's declared size, but must
+      not license a diff anywhere else in that command (segname, vmaddr, fileoff, section list).
+    """
+    ranges = list(load_command_ranges(header, cmd=0x1D))
+    for start, end in load_command_ranges(header, cmd=0x19):
+        segname = header[start + 8 : start + 24].rstrip(b"\x00")
+        if segname == b"__LINKEDIT":
+            ranges.append((start + 32, start + 40))  # vmsize
+            ranges.append((start + 48, start + 56))  # filesize
+    return ranges
+
+
 def differing_ranges(a: bytes, b: bytes) -> list[tuple[int, int]]:
     """Half-open [start, end) ranges where a and b differ, over their common length."""
     ranges: list[tuple[int, int]] = []
@@ -102,7 +123,7 @@ def check_sites(stock_bin: Path, patched_bin: Path, sites: list[dict]) -> None:
     limit = sig[0] if sig else min(len(a), len(b))
     diffs = differing_ranges(a[:limit], b[:limit])
     allowed = [(s["offset"], s["offset"] + s["length"]) for s in sites]
-    allowed += load_command_ranges(a, cmd=0x1D)
+    allowed += codesign_owned_ranges(a)
     if not ranges_within(diffs, allowed):
         stray = [d for d in diffs if not ranges_within([d], allowed)]
         raise SystemExit(f"{patched_bin.name}: bytes differ outside declared sites: {[(f'{s:#x}', f'{e:#x}') for s, e in stray[:10]]}")

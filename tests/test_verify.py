@@ -69,5 +69,43 @@ class LoadCommandRanges(unittest.TestCase):
         self.assertEqual(verify.load_command_ranges(header, cmd=0x1D), [])
 
 
+def _segment64_command(segname: bytes, vmsize: int, filesize: int) -> bytes:
+    """A minimal segment_command_64 (no sections): cmd(4) cmdsize(4) segname(16) vmaddr(8)
+    vmsize(8) fileoff(8) filesize(8) maxprot(4) initprot(4) nsects(4) flags(4) = 72 bytes."""
+    return struct.pack(
+        "<2I16sQQQQ4I",
+        0x19, 72, segname.ljust(16, b"\x00"),
+        0, vmsize, 0, filesize,
+        7, 7, 0, 0,
+    )
+
+
+class CodesignOwnedRanges(unittest.TestCase):
+    def test_linkedit_vmsize_filesize_and_code_signature_only(self):
+        text_seg = _segment64_command(b"__TEXT", vmsize=0x1000, filesize=0x1000)
+        linkedit_seg = _segment64_command(b"__LINKEDIT", vmsize=0x5000, filesize=0x4000)
+        sig = _load_command(0x1D, 16)
+        header = _mach_header_64(3, len(text_seg) + len(linkedit_seg) + len(sig)) + text_seg + linkedit_seg + sig
+
+        text_start = 32
+        linkedit_start = text_start + len(text_seg)
+        sig_start = linkedit_start + len(linkedit_seg)
+
+        expected = [
+            (sig_start, sig_start + len(sig)),
+            (linkedit_start + 32, linkedit_start + 40),  # vmsize
+            (linkedit_start + 48, linkedit_start + 56),  # filesize
+        ]
+        self.assertEqual(verify.codesign_owned_ranges(header), expected)
+
+        # __TEXT's window must not appear anywhere in the result.
+        for start, end in expected:
+            self.assertFalse(text_start <= start < text_start + len(text_seg))
+
+    def test_wrong_magic_returns_empty(self):
+        header = struct.pack("<8I", 0xDEADBEEF, 0, 0, 0, 0, 0, 0, 0)
+        self.assertEqual(verify.codesign_owned_ranges(header), [])
+
+
 if __name__ == "__main__":
     unittest.main()
