@@ -49,7 +49,16 @@ class Pipeline(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         DIST.mkdir(parents=True, exist_ok=True)
-        cls.out_zip = gamepatch.build(PIN, PLATFORM, ROOT / "patches", CACHE, WORK, DIST)
+        built_zip = DIST / f"electron-v{PIN}-{PLATFORM}.zip"
+        stock_app = WORK / PLATFORM / "stock" / "Electron.app"
+        patched_app = WORK / PLATFORM / "patched" / "Electron.app"
+        # The gate's build step produced the artifact that actually ships (uploaded by build,
+        # downloaded by publish, released as-is); this suite must examine that artifact, not a
+        # rebuild of its own, or a difference introduced only by rebuilding would go uncaught.
+        if built_zip.exists() and stock_app.exists() and patched_app.exists():
+            cls.out_zip = built_zip
+        else:
+            cls.out_zip = gamepatch.build(PIN, PLATFORM, ROOT / "patches", CACHE, WORK, DIST)
         cls.record = json.loads((DIST / f"electron-v{PIN}-{PLATFORM}.patches.json").read_text())
         cls.stock_zip = CACHE / f"v{PIN}" / f"electron-v{PIN}-{PLATFORM}.zip"
 

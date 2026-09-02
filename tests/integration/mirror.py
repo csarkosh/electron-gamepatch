@@ -31,8 +31,17 @@ class Mirror:
         return f"http://127.0.0.1:{self.server.server_address[1]}/"
 
     def corrupt_shasums(self, version: str) -> None:
+        """Flip the first hex character of the first line's digest to a different hex character.
+
+        Deterministic: unlike replacing the first literal "0" (a no-op if the digest happens
+        to start with a non-zero hex digit), this always changes the digest, regardless of its
+        content.
+        """
         p = self.root / f"v{version}" / "SHASUMS256.txt"
-        p.write_text(p.read_text().replace("0", "1", 1))
+        text = p.read_text()
+        c = text[0]
+        flipped = "0" if c != "0" else "1"
+        p.write_text(flipped + text[1:])
 
     def __exit__(self, *exc):
         self.server.shutdown()
