@@ -7,11 +7,14 @@
    the LC_CODE_SIGNATURE load command itself is also excluded, since re-signing can change
    its dataoff/datasize fields, which live in the header before the blob starts; and the
    __LINKEDIT LC_SEGMENT_64 command's vmsize/filesize fields are excluded, since a shrunk
-   ad-hoc signature shrinks the segment codesign declares it lives in).
+   ad-hoc signature shrinks the segment codesign declares it lives in). PE has no signature
+   to exclude, so its budget is exactly the declared sites and the file length must not change.
 3. Signature: the patched binary's signature verifies, on a scratch copy outside the bundle
    (codesign refuses to verify a framework's main executable in place: it treats the path as
-   the bundle and complains the bundle has no sealed resources).
-4. Launch smoke: the patched Electron starts and reports its version.
+   the bundle and complains the bundle has no sealed resources). PE builds are not signed, so
+   this step is skipped for win32-*.
+4. Launch smoke: the patched Electron starts and reports its version. For win32-*, this is
+   skipped here too; the launch proof is a Windows CI leg added later.
 """
 from __future__ import annotations
 
@@ -25,7 +28,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-_INSN = re.compile(r"^\s*[0-9a-f]+:\s+[0-9a-f]{8}\s+(.*)$")
+_INSN = re.compile(r"^\s*[0-9a-f]+:\s+(\S.*)$")
 _IMMEDIATE = re.compile(r"#(-?)(0x[0-9a-fA-F]+|\d+)")
 
 
@@ -52,8 +55,12 @@ def normalize_disasm(objdump_output: str) -> list[str]:
     return out
 
 
-def disassemble(binary: Path, start: int, end: int) -> list[str]:
-    cmd = ["xcrun", "llvm-objdump", "-d", f"--start-address={start:#x}", f"--stop-address={end:#x}", str(binary)]
+def disassemble(binary: Path, start: int, end: int, x86: bool = False) -> list[str]:
+    cmd = ["xcrun", "llvm-objdump", "-d", "--no-show-raw-insn",
+           f"--start-address={start:#x}", f"--stop-address={end:#x}"]
+    if x86:
+        cmd.append("--x86-asm-syntax=intel")
+    cmd.append(str(binary))
     return normalize_disasm(subprocess.run(cmd, check=True, text=True, capture_output=True).stdout)
 
 
@@ -129,24 +136,43 @@ def signature_reaches_eof(sig_range: tuple[int, int] | None, file_len: int) -> b
     return sig_range is not None and sig_range[1] == file_len
 
 
-def check_sites(stock_bin: Path, patched_bin: Path, sites: list[dict]) -> None:
-    for site in sites:
-        start, end = site["offset"], site["offset"] + site["length"]
-        got = disassemble(patched_bin, start, end)
-        if got != site["asm"]:
-            raise SystemExit(f"{site['symbol']} @ {start:#x}: disassembles to {got}, expected {site['asm']}")
-        log(f"{site['symbol']} @ {start:#x}: {' ; '.join(got)}  OK")
+def _stray_ranges(patched_bin: Path, diffs: list[tuple[int, int]], allowed: list[tuple[int, int]]) -> None:
+    """Raise if any diff falls outside `allowed`, naming the first few offenders."""
+    if not ranges_within(diffs, allowed):
+        stray = [d for d in diffs if not ranges_within([d], allowed)]
+        raise SystemExit(f"{patched_bin.name}: bytes differ outside declared sites: {[(f'{s:#x}', f'{e:#x}') for s, e in stray[:10]]}")
 
+
+def check_sites(stock_bin: Path, patched_bin: Path, sites: list[dict], fmt: str = "macho") -> None:
     a, b = stock_bin.read_bytes(), patched_bin.read_bytes()
+    base = 0
+    if fmt == "pe":
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import gamepatch  # noqa: E402
+        base = gamepatch.pe_image_base(a)
+    for site in sites:
+        vaddr = site.get("vaddr", site["offset"])
+        got = disassemble(patched_bin, base + vaddr, base + vaddr + site["length"], x86=(fmt == "pe"))
+        if got != site["asm"]:
+            raise SystemExit(f"{site['symbol']} @ {vaddr:#x}: disassembles to {got}, expected {site['asm']}")
+        log(f"{site['symbol']} @ {site['offset']:#x}: {' ; '.join(got)}  OK")
+
+    allowed = [(s["offset"], s["offset"] + s["length"]) for s in sites]
+    if fmt == "pe":
+        if len(a) != len(b):
+            raise SystemExit(f"{patched_bin.name}: length {len(b)} != stock {len(a)} — a PE patch must not change the file size")
+        diffs = differing_ranges(a, b)
+        _stray_ranges(patched_bin, diffs, allowed)
+        log(f"{patched_bin.name}: {len(diffs)} differing range(s), all inside declared sites (no signature on PE)")
+        return
+
+    # Mach-O budget, unchanged from here:
     otool = subprocess.run(["otool", "-l", str(stock_bin)], check=True, text=True, capture_output=True).stdout
     sig = code_signature_range(otool)
     limit = sig[0] if sig else min(len(a), len(b))
     diffs = differing_ranges(a[:limit], b[:limit])
-    allowed = [(s["offset"], s["offset"] + s["length"]) for s in sites]
     allowed += codesign_owned_ranges(a)
-    if not ranges_within(diffs, allowed):
-        stray = [d for d in diffs if not ranges_within([d], allowed)]
-        raise SystemExit(f"{patched_bin.name}: bytes differ outside declared sites: {[(f'{s:#x}', f'{e:#x}') for s, e in stray[:10]]}")
+    _stray_ranges(patched_bin, diffs, allowed)
 
     patched_otool = subprocess.run(["otool", "-l", str(patched_bin)], check=True, text=True, capture_output=True).stdout
     patched_sig = code_signature_range(patched_otool)
@@ -200,11 +226,15 @@ def main(argv: list[str] | None = None) -> int:
     by_binary: dict[str, list[dict]] = {}
     for patch in record["patches"]:
         by_binary.setdefault(patch["binary"], []).extend(patch["sites"])
+    fmt = "pe" if a.platform.startswith("win32-") else "macho"
     for rel, sites in by_binary.items():
-        check_sites(stock / rel, patched / rel, sites)
-    for rel in by_binary:
-        signature_valid(patched / rel)
-    launch_smoke(patched / "Electron.app", a.version)
+        check_sites(stock / rel, patched / rel, sites, fmt)
+    if fmt == "macho":
+        for rel in by_binary:
+            signature_valid(patched / rel)
+        launch_smoke(patched / "Electron.app", a.version)
+    else:
+        log("no signature on PE; launch and behaviour are proven by the Windows probe leg in CI")
     return 0
 
 

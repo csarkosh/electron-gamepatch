@@ -10,14 +10,14 @@ OBJDUMP = """
 Disassembly of section __TEXT,__text:
 
 0000000006266c88 <_ares_llist_node_next>:
- 903ca3c: 52800000     \tmov\tw0, #0x0                ; =0
- 903ca40: d65f03c0     \tret
+ 903ca3c: \tmov\tw0, #0x0                ; =0
+ 903ca40: \tret
 """
 
 
-def _objdump(insn: str) -> str:
-    """One disassembled instruction wrapped in a minimal objdump listing, matching verify._INSN."""
-    return f" 903ca3c: 52800000     \t{insn}\n"
+def _objdump(insn: str, addr: str = "903ca3c") -> str:
+    # llvm-objdump --no-show-raw-insn: "<addr>: <tab><mnemonic><tab><operands>"
+    return f"\nElectron Framework:\tfile format mach-o arm64\n\nDisassembly of section __TEXT,__text:\n\n{addr}: \t{insn}\n"
 
 
 class Disasm(unittest.TestCase):
@@ -41,6 +41,29 @@ class Disasm(unittest.TestCase):
     def test_register_only_lines_are_unchanged(self):
         self.assertEqual(verify.normalize_disasm(_objdump("ret")), ["ret"])
         self.assertEqual(verify.normalize_disasm(_objdump("mov\tx0, x1")), ["mov x0, x1"])
+
+
+class DisasmX86(unittest.TestCase):
+    def test_intel_syntax_lines_normalize(self):
+        out = "electron.exe:\tfile format coff-x86-64\n\n147c53420: \txor\teax, eax\n147c53422: \tret\n"
+        self.assertEqual(verify.normalize_disasm(out), ["xor eax, eax", "ret"])
+
+    def test_variable_length_addresses_are_accepted(self):
+        self.assertEqual(verify.normalize_disasm("1: \tret\n"), ["ret"])
+
+
+class PEBudget(unittest.TestCase):
+    def test_sites_only_budget_accepts_exactly_the_site(self):
+        a = b"\0" * 16 + bytes.fromhex("565753") + b"\0" * 16
+        b = b"\0" * 16 + bytes.fromhex("31c0c3") + b"\0" * 16
+        diffs = verify.differing_ranges(a, b)
+        self.assertTrue(verify.ranges_within(diffs, [(16, 19)]))
+
+    def test_sites_only_budget_rejects_a_stray_byte(self):
+        a = b"\0" * 16 + bytes.fromhex("565753") + b"\0" * 16
+        b = b"\0" * 16 + bytes.fromhex("31c0c3") + b"\0" * 15 + b"\x01"
+        diffs = verify.differing_ranges(a, b)
+        self.assertFalse(verify.ranges_within(diffs, [(16, 19)]))
 
 
 class Ranges(unittest.TestCase):
