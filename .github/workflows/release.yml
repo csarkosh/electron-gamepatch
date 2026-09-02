@@ -27,6 +27,7 @@ jobs:
         run: |
           set -eu
           if [ -n "$REQUESTED" ]; then
+            [[ "$REQUESTED" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "version must look like 44.1.1, got: $REQUESTED" >&2; exit 1; }
             echo "versions=[\"$REQUESTED\"]" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -50,9 +51,10 @@ jobs:
         id: exists
         env:
           GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ matrix.version }}
         run: |
-          if gh release view "v${{ matrix.version }}" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "released=true" >> "$GITHUB_OUTPUT"; echo "v${{ matrix.version }} already released; skipping"
+          if gh release view "v$VERSION" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "released=true" >> "$GITHUB_OUTPUT"; echo "v$VERSION already released; skipping"
           else
             echo "released=false" >> "$GITHUB_OUTPUT"
           fi
@@ -81,8 +83,9 @@ jobs:
         id: exists
         env:
           GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ matrix.version }}
         run: |
-          if gh release view "v${{ matrix.version }}" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+          if gh release view "v$VERSION" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "released=true" >> "$GITHUB_OUTPUT"
           else
             echo "released=false" >> "$GITHUB_OUTPUT"
@@ -96,19 +99,21 @@ jobs:
         if: steps.exists.outputs.released == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ matrix.version }}
         run: |
           set -eu
-          python3 tools/gamepatch.py passthrough --version "${{ matrix.version }}"
+          python3 tools/gamepatch.py passthrough --version "$VERSION"
           python3 tools/gamepatch.py shasums > dist/SHASUMS256.txt
-          python3 tools/gamepatch.py notes --version "${{ matrix.version }}" > notes.md
+          python3 tools/gamepatch.py notes --version "$VERSION" > notes.md
           cat dist/SHASUMS256.txt
       - name: publish release
         if: steps.exists.outputs.released == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ matrix.version }}
         run: |
           set -eu
-          gh release create "v${{ matrix.version }}" -R "$GITHUB_REPOSITORY" \
-            --title "Electron v${{ matrix.version }}, game-patched" \
+          gh release create "v$VERSION" -R "$GITHUB_REPOSITORY" \
+            --title "Electron v$VERSION, game-patched" \
             --notes-file notes.md \
             dist/*.zip dist/SHASUMS256.txt
