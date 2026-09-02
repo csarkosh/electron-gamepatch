@@ -123,6 +123,12 @@ def ranges_within(diffs: list[tuple[int, int]], allowed: list[tuple[int, int]]) 
     return all(any(s >= a and e <= b for a, b in allowed) for s, e in diffs)
 
 
+def signature_reaches_eof(sig_range: tuple[int, int] | None, file_len: int) -> bool:
+    """True when the LC_CODE_SIGNATURE range's end (dataoff + datasize) is the end of the
+    file — i.e. no bytes can hide after the signature blob."""
+    return sig_range is not None and sig_range[1] == file_len
+
+
 def check_sites(stock_bin: Path, patched_bin: Path, sites: list[dict]) -> None:
     for site in sites:
         start, end = site["offset"], site["offset"] + site["length"]
@@ -141,7 +147,17 @@ def check_sites(stock_bin: Path, patched_bin: Path, sites: list[dict]) -> None:
     if not ranges_within(diffs, allowed):
         stray = [d for d in diffs if not ranges_within([d], allowed)]
         raise SystemExit(f"{patched_bin.name}: bytes differ outside declared sites: {[(f'{s:#x}', f'{e:#x}') for s, e in stray[:10]]}")
-    log(f"{patched_bin.name}: {len(diffs)} differing range(s), all inside declared sites; code signature excluded from {limit:#x}")
+
+    patched_otool = subprocess.run(["otool", "-l", str(patched_bin)], check=True, text=True, capture_output=True).stdout
+    patched_sig = code_signature_range(patched_otool)
+    if not signature_reaches_eof(patched_sig, len(b)):
+        raise SystemExit(
+            f"{patched_bin.name}: LC_CODE_SIGNATURE does not reach end of file "
+            f"(dataoff+datasize={patched_sig}, file is {len(b)} bytes) — bytes could hide after the signature"
+        )
+
+    log(f"{patched_bin.name}: {len(diffs)} differing range(s), all inside declared sites + codesign-owned windows "
+        f"(LC_CODE_SIGNATURE cmd, __LINKEDIT vmsize/filesize, signature blob from {limit:#x})")
 
 
 def signature_valid(binary: Path) -> None:

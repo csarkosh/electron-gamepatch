@@ -3,6 +3,10 @@
 
 Pure functions first (tested in tests/test_gamepatch.py), then the IO layer and CLI.
 Stdlib only.
+
+patch.json fields: "name", "summary", "targets" (required); "upstream_source" (optional) is
+a free-text string naming the Chromium/Electron source file the patch targets, for humans —
+not parsed by the engine, but validated non-empty when present.
 """
 from __future__ import annotations
 
@@ -75,6 +79,8 @@ def load_patch(path: Path) -> dict:
     for key in ("name", "summary", "targets"):
         if key not in patch:
             raise ValueError(f"{path}: missing {key!r}")
+    if "upstream_source" in patch and (not isinstance(patch["upstream_source"], str) or not patch["upstream_source"]):
+        raise ValueError(f"{path}: 'upstream_source' must be a non-empty string")
     for platform, target in patch["targets"].items():
         if "binary" not in target or not isinstance(target.get("sites"), list) or not target["sites"]:
             raise ValueError(f"{path}: target {platform!r} needs 'binary' and a non-empty 'sites' list")
@@ -113,6 +119,7 @@ def parse_shasums(text: str) -> dict[str, str]:
 # ---------------------------------------------------------------- IO layer
 
 import argparse
+import contextlib
 import hashlib
 import io
 import os
@@ -220,14 +227,25 @@ def assert_text_at_zero(binary: Path) -> None:
         raise ValueError(f"{binary}: __TEXT is not at vmaddr 0 / fileoff 0; symbol addresses are not file offsets")
 
 
-def open_sym(symbols_zip: Path, binary_basename: str) -> io.TextIOWrapper:
-    """A text stream over `<basename>.sym` inside an upstream symbols zip."""
+@contextlib.contextmanager
+def open_sym(symbols_zip: Path, binary_basename: str):
+    """A text stream over `<basename>.sym` inside an upstream symbols zip.
+
+    Context manager: closes both the text stream and the underlying ZipFile on exit.
+    """
     zf = zipfile.ZipFile(symbols_zip)
-    wanted = f"/{binary_basename}.sym"
-    names = [n for n in zf.namelist() if n.endswith(wanted)]
-    if len(names) != 1:
-        raise LookupError(f"{symbols_zip.name}: expected one {wanted}, found {names}")
-    return io.TextIOWrapper(zf.open(names[0]), encoding="utf-8", errors="replace")
+    try:
+        wanted = f"/{binary_basename}.sym"
+        names = [n for n in zf.namelist() if n.endswith(wanted)]
+        if len(names) != 1:
+            raise LookupError(f"{symbols_zip.name}: expected one {wanted}, found {names}")
+        sym = io.TextIOWrapper(zf.open(names[0]), encoding="utf-8", errors="replace")
+        try:
+            yield sym
+        finally:
+            sym.close()
+    finally:
+        zf.close()
 
 
 def unzip(zip_path: Path, dest: Path) -> None:
@@ -314,17 +332,65 @@ def build(version: str, platform: str, patches_root: Path, cache: Path, work: Pa
     return out_zip
 
 
-def passthrough(version: str, cache: Path, dist: Path) -> list[str]:
-    """Copy every upstream platform zip that dist/ does not already hold, verified against upstream."""
+def passthrough(version: str, cache: Path, dist: Path, patches_root: Path) -> list[str]:
+    """Copy every upstream platform zip that dist/ does not already hold, verified against upstream.
+
+    Refuses to pass through any platform a loaded patch targets unless that platform's built
+    zip is already in dist/: a missing build there would otherwise ship unpatched bytes for
+    a platform we claim to patch, silently.
+    """
     dist.mkdir(parents=True, exist_ok=True)
+    patches = load_patches(patches_root)
+    targeted: dict[str, list[str]] = {}
+    for p in patches:
+        for platform in p["targets"]:
+            targeted.setdefault(platform, []).append(p["name"])
     copied = []
     for name in upstream_asset_names(upstream_release(version), version):
         if (dist / name).exists():
             continue
+        m = _PLATFORM_ZIP.match(name)
+        platform = m.group("platform") if m else None
+        if platform in targeted:
+            names = ", ".join(targeted[platform])
+            raise SystemExit(f"{name}: platform {platform} is patched by {names}; build it first, never pass it through")
         shutil.copy2(fetch_upstream(version, name, cache), dist / name)
         copied.append(name)
         log(f"pass-through {name}")
     return copied
+
+
+def check_dist(version: str, cache: Path, dist: Path, patches_root: Path) -> None:
+    """Assert dist/ is ready to publish for `version`.
+
+    (a) The set of electron-v<version>-*.zip files in dist/ equals the set of platform zip
+        names upstream's own SHASUMS256.txt lists for this version — the authoritative
+        complete list of what a release must carry, not the (sometimes lagging) API.
+    (b) Every pass-through zip in dist/ (i.e. not a platform a loaded patch targets) hashes
+        to upstream's value.
+    (c) Every *.patches.json in dist/ has its sibling zip.
+    """
+    shasums = upstream_shasums(version, cache)
+    expected = {name for name in shasums if (m := _PLATFORM_ZIP.match(name)) and m.group("v") == version}
+    have = {p.name for p in dist.glob(f"electron-v{version}-*.zip")}
+    if have != expected:
+        missing, extra = sorted(expected - have), sorted(have - expected)
+        raise SystemExit(f"dist/ does not match upstream SHASUMS256.txt for v{version}: missing {missing}, extra {extra}")
+
+    targeted = {platform for p in load_patches(patches_root) for platform in p["targets"]}
+    for name in sorted(have):
+        platform = _PLATFORM_ZIP.match(name).group("platform")
+        if platform in targeted:
+            continue
+        actual = sha256_file(dist / name)
+        if actual != shasums[name]:
+            raise SystemExit(f"{name}: pass-through sha256 {actual} != upstream {shasums[name]}")
+
+    for rec_path in sorted(dist.glob("*.patches.json")):
+        zip_name = rec_path.name.removesuffix(".patches.json") + ".zip"
+        if not (dist / zip_name).exists():
+            raise SystemExit(f"{rec_path.name}: no sibling zip {zip_name}")
+    log(f"check-dist v{version}: {len(have)} zip(s) match upstream, all present, all patches.json paired")
 
 
 def shasums(dist: Path) -> str:
@@ -389,16 +455,20 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("shasums", help="print SHASUMS256.txt for dist/*.zip")
     n = sub.add_parser("notes", help="print release notes for dist/")
     n.add_argument("--version", required=True)
+    c = sub.add_parser("check-dist", help="assert dist/ is ready to publish for --version")
+    c.add_argument("--version", required=True)
     a = ap.parse_args(argv)
     if a.cmd == "build":
         a.dist.mkdir(parents=True, exist_ok=True)
         build(a.version, a.platform, a.patches, a.cache, a.work, a.dist)
     elif a.cmd == "passthrough":
-        passthrough(a.version, a.cache, a.dist)
+        passthrough(a.version, a.cache, a.dist, a.patches)
     elif a.cmd == "shasums":
         sys.stdout.write(shasums(a.dist))
     elif a.cmd == "notes":
         sys.stdout.write(notes(a.version, a.patches, a.dist))
+    elif a.cmd == "check-dist":
+        check_dist(a.version, a.cache, a.dist, a.patches)
     return 0
 
 

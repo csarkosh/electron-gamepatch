@@ -66,6 +66,17 @@ class CodeSignature(unittest.TestCase):
         self.assertIsNone(verify.code_signature_range("cmd LC_SEGMENT_64\n"))
 
 
+class SignatureReachesEof(unittest.TestCase):
+    def test_true_when_signature_end_is_file_end(self):
+        self.assertTrue(verify.signature_reaches_eof((1000, 1650), 1650))
+
+    def test_false_when_bytes_hide_after_signature(self):
+        self.assertFalse(verify.signature_reaches_eof((1000, 1650), 1700))
+
+    def test_false_when_no_signature_present(self):
+        self.assertFalse(verify.signature_reaches_eof(None, 1650))
+
+
 def _mach_header_64(ncmds: int, sizeofcmds: int) -> bytes:
     # magic, cputype, cpusubtype, filetype, ncmds, sizeofcmds, flags, reserved
     return struct.pack("<8I", 0xFEEDFACF, 0x100000C, 0, 2, ncmds, sizeofcmds, 0, 0)
