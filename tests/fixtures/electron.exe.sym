@@ -1,0 +1,3 @@
+MODULE windows x86_64 E576D66B49E136884C4C44205044422E1 electron.exe.pdb
+FUNC 7c53420 6e 0 PointerLockController::HandleUserPressedEscape()
+FUNC 7c53820 6d 0 KeyboardLockController::HandleUserPressedEscape()

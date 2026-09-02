@@ -14,6 +14,11 @@ next `requestPointerLock()` is granted immediately.
 **The bytes.** The function is 17 instructions; its prologue is replaced by `mov w0, #0; ret`.
 Eight bytes, one site, located per release from Electron's published Breakpad symbols.
 
+On `win32-x64`, `electron.exe`'s prologue `push rsi; push rdi; push rbx` is replaced by
+`xor eax, eax; ret` — three bytes, one site, located the same way through Electron's Breakpad
+symbols and the PE section table. Unlike darwin-arm64, there is no code signature to re-apply
+after patching.
+
 **Measured** (Electron 44.0.0, darwin-arm64, real Esc via `osascript`, 3 rounds each):
 stock relocks after 1322–1526 ms; patched relocks in 10–24 ms with the page seeing
 `keydown Escape` while still locked. In a real game (click → Esc → Resume): 12–16 ms.

@@ -37,6 +37,14 @@ class ParseSym(unittest.TestCase):
             gamepatch.parse_sym(["FUNC 1 2 0 f()"])
 
 
+class ParseWindowsSym(unittest.TestCase):
+    def test_module_id_and_rva(self):
+        with open(FIXTURES / "electron.exe.sym") as f:
+            module_id, funcs = gamepatch.parse_sym(f)
+        self.assertEqual(module_id, "E576D66B49E136884C4C44205044422E1")
+        self.assertEqual(funcs["PointerLockController::HandleUserPressedEscape()"], [(0x7C53420, 0x6E)])
+
+
 class ResolveSymbol(unittest.TestCase):
     def test_unique(self):
         self.assertEqual(gamepatch.resolve_symbol({"f()": [(16, 4)]}, "f()"), (16, 4))
@@ -131,7 +139,7 @@ class LoadPatch(unittest.TestCase):
     def test_real_patch_loads(self):
         p = gamepatch.load_patch(Path(__file__).parents[1] / "patches/pointerlock-noeject/patch.json")
         self.assertEqual(p["name"], "pointerlock-noeject")
-        self.assertIn("darwin-arm64", p["targets"])
+        self.assertEqual(sorted(p["targets"]), ["darwin-arm64", "win32-x64"])
 
     def test_rejects_odd_hex(self):
         bad = {"name": "x", "summary": "s", "targets": {"darwin-arm64": {"binary": "b", "sites": [dict(SITE, expect="abc")]}}}
@@ -200,13 +208,13 @@ class MachOHelpers(unittest.TestCase):
         self.assertFalse(gamepatch.text_segment_is_at_zero(out))
 
 
-PATCHES_ROOT = Path(__file__).parents[1] / "patches"  # real patches/: pointerlock-noeject targets darwin-arm64 only
+PATCHES_ROOT = Path(__file__).parents[1] / "patches"  # real patches/: pointerlock-noeject targets darwin-arm64 and win32-x64
 
 
 class Passthrough(unittest.TestCase):
     RELEASE = {"assets": [
         {"name": "electron-v44.1.1-darwin-arm64.zip"},
-        {"name": "electron-v44.1.1-win32-x64.zip"},
+        {"name": "electron-v44.1.1-linux-x64.zip"},
     ]}
 
     def setUp(self):
@@ -229,6 +237,7 @@ class Passthrough(unittest.TestCase):
 
     def test_passes_through_unpatched_platform_when_patched_zip_present(self):
         (self.dist / "electron-v44.1.1-darwin-arm64.zip").write_bytes(b"already-built-and-patched")
+        (self.dist / "electron-v44.1.1-win32-x64.zip").write_bytes(b"already-built-and-patched")
 
         def fake_fetch(version, filename, cache):
             p = self.cache / filename
@@ -236,8 +245,8 @@ class Passthrough(unittest.TestCase):
             return p
         gamepatch.fetch_upstream = fake_fetch
         copied = gamepatch.passthrough("44.1.1", self.cache, self.dist, PATCHES_ROOT)
-        self.assertEqual(copied, ["electron-v44.1.1-win32-x64.zip"])
-        self.assertTrue((self.dist / "electron-v44.1.1-win32-x64.zip").exists())
+        self.assertEqual(copied, ["electron-v44.1.1-linux-x64.zip"])
+        self.assertTrue((self.dist / "electron-v44.1.1-linux-x64.zip").exists())
 
 
 class CheckDist(unittest.TestCase):
@@ -253,35 +262,35 @@ class CheckDist(unittest.TestCase):
     def test_missing_zip_from_upstream_set_raises(self):
         self.stub_shasums({
             "electron-v44.1.1-darwin-arm64.zip": "aaa",
-            "electron-v44.1.1-win32-x64.zip": "bbb",
+            "electron-v44.1.1-linux-x64.zip": "bbb",
         })
         (self.dist / "electron-v44.1.1-darwin-arm64.zip").write_bytes(b"patched-bytes")
         with self.assertRaises(SystemExit) as cm:
             gamepatch.check_dist("44.1.1", self.cache, self.dist, PATCHES_ROOT)
-        self.assertIn("electron-v44.1.1-win32-x64.zip", str(cm.exception))
+        self.assertIn("electron-v44.1.1-linux-x64.zip", str(cm.exception))
 
     def test_passthrough_hash_mismatch_raises(self):
         data = b"fake-zip-bytes"
         real_sha = hashlib.sha256(data).hexdigest()
         self.stub_shasums({
             "electron-v44.1.1-darwin-arm64.zip": "unused-patched-platform-sha",
-            "electron-v44.1.1-win32-x64.zip": real_sha,
+            "electron-v44.1.1-linux-x64.zip": real_sha,
         })
         (self.dist / "electron-v44.1.1-darwin-arm64.zip").write_bytes(b"patched-bytes")
-        (self.dist / "electron-v44.1.1-win32-x64.zip").write_bytes(b"corrupted, not upstream's bytes")
+        (self.dist / "electron-v44.1.1-linux-x64.zip").write_bytes(b"corrupted, not upstream's bytes")
         with self.assertRaises(SystemExit) as cm:
             gamepatch.check_dist("44.1.1", self.cache, self.dist, PATCHES_ROOT)
-        self.assertIn("electron-v44.1.1-win32-x64.zip", str(cm.exception))
+        self.assertIn("electron-v44.1.1-linux-x64.zip", str(cm.exception))
 
     def test_patches_json_without_sibling_zip_raises(self):
         data = b"fake-zip-bytes"
         real_sha = hashlib.sha256(data).hexdigest()
         self.stub_shasums({
             "electron-v44.1.1-darwin-arm64.zip": "unused-patched-platform-sha",
-            "electron-v44.1.1-win32-x64.zip": real_sha,
+            "electron-v44.1.1-linux-x64.zip": real_sha,
         })
         (self.dist / "electron-v44.1.1-darwin-arm64.zip").write_bytes(b"patched-bytes")
-        (self.dist / "electron-v44.1.1-win32-x64.zip").write_bytes(data)
+        (self.dist / "electron-v44.1.1-linux-x64.zip").write_bytes(data)
         (self.dist / "electron-v9.0.0-linux-x64.patches.json").write_text("{}")
         with self.assertRaises(SystemExit) as cm:
             gamepatch.check_dist("44.1.1", self.cache, self.dist, PATCHES_ROOT)
@@ -292,10 +301,10 @@ class CheckDist(unittest.TestCase):
         real_sha = hashlib.sha256(data).hexdigest()
         self.stub_shasums({
             "electron-v44.1.1-darwin-arm64.zip": "unused-patched-platform-sha",
-            "electron-v44.1.1-win32-x64.zip": real_sha,
+            "electron-v44.1.1-linux-x64.zip": real_sha,
         })
         (self.dist / "electron-v44.1.1-darwin-arm64.zip").write_bytes(b"patched-bytes")
-        (self.dist / "electron-v44.1.1-win32-x64.zip").write_bytes(data)
+        (self.dist / "electron-v44.1.1-linux-x64.zip").write_bytes(data)
         (self.dist / "electron-v44.1.1-darwin-arm64.patches.json").write_text("{}")
         gamepatch.check_dist("44.1.1", self.cache, self.dist, PATCHES_ROOT)  # must not raise
 
