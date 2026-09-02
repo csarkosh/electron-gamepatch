@@ -9,6 +9,25 @@ import threading
 from pathlib import Path
 
 
+class _Handler(http.server.SimpleHTTPRequestHandler):
+    """Answers HTTP/1.1 and keeps quiet.
+
+    Both settings must live on the handler *class*: the server instantiates it per request, so
+    attributes set on a functools.partial wrapper are never seen (that is what this file used to
+    do, which is why it logged every request and answered HTTP/1.0 regardless).
+
+    HTTP/1.1 is what GitHub's release CDN speaks, and it keeps the socket open after the body
+    instead of signalling end-of-response by closing it. Under HTTP/1.0, Node 22.23.1's bundled
+    undici intermittently dies on that close with `assert(!this.paused)` in `Parser.finish` when
+    the download is paused for backpressure, taking electron's install.js down with it.
+    """
+
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, *args, **kwargs):
+        pass
+
+
 class Mirror:
     def __init__(self, dist: Path, version: str):
         self.root = Path(tempfile.mkdtemp(prefix="mirror-"))
@@ -17,13 +36,7 @@ class Mirror:
         for p in dist.iterdir():
             if p.suffix == ".zip" or p.name == "SHASUMS256.txt":
                 shutil.copy2(p, rel / p.name)
-        handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(self.root))
-        handler.log_message = lambda *a, **k: None  # type: ignore[attr-defined]
-        # Speak HTTP/1.1, as the real release CDN does. Under the default HTTP/1.0 the server
-        # closes the socket after the body, and Node 22.23.1's bundled undici asserts
-        # (assert(!this.paused) in Parser.finish) when that end arrives while the download is
-        # paused for backpressure — install.js then dies before writing anything.
-        handler.protocol_version = "HTTP/1.1"  # type: ignore[attr-defined]
+        handler = functools.partial(_Handler, directory=str(self.root))
         self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
 
