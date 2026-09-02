@@ -32,9 +32,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REQUESTED: ${{ inputs.version }}
+          FORCE: ${{ inputs.force }}
         run: |
           set -eu
-          if [ "${{ inputs.force }}" = "true" ] && [ -z "$REQUESTED" ]; then
+          if [ "${FORCE:-false}" = "true" ] && [ -z "$REQUESTED" ]; then
             echo "force needs a version" >&2; exit 1
           fi
           if [ -n "$REQUESTED" ]; then

@@ -13,22 +13,25 @@
 `.sym` files per binary. The engine currently opens `<binary basename>.sym`; on Windows the
 module name carries `.exe`/`.dll` (`electron.exe.sym`).
 
-**Address ↔ file offset.** Only proven for the Mach-O framework (`__TEXT` at vmaddr 0, fileoff
-0; the engine asserts it). PE and ELF need a section-table translation (RVA → file offset):
-implement `assert_text_at_zero`'s equivalent per format before enabling a platform, and add
-the format's disassembler (`llvm-objdump` handles all three on a Mac).
+**Address ↔ file offset.** Proven for the Mach-O framework (`__TEXT` at vmaddr 0, fileoff 0;
+the engine asserts it) and for PE: `pe_rva_to_offset`/`pe_offset_to_rva` in `tools/gamepatch.py`
+walk the section table, and `pe_codeview_id` checks the RSDS debug-record id against the
+`.sym`'s module id before any patch is applied. ELF still needs its own section-table
+translation before that platform can be enabled.
 
 **Instruction encoding.** The pointer-lock cooldown constant `1250000` (0x1312D0) is a
-`mov w9,#0x12d0; movk w9,#0x13,lsl#16` pair on arm64; on x86-64 expect a 32-bit immediate in
+`mov w9,#0x12d0; movk w9,#0x13,lsl#16` pair on arm64; on x86-64 it is a 32-bit immediate in
 `cmp`/`add`/`lea`, so `expect` bytes and lengths differ per arch. The `HandleUserPressedEscape`
-short-circuit is `xor eax,eax; ret` (`31c0c3`, 3 bytes) on x86-64 — the site length changes,
-which is fine: `expect`/`write` only need to match each other.
+short-circuit is `xor eax,eax; ret` (`31c0c3`, 3 bytes) on x86-64, replacing three single-byte
+`push` instructions (`565753`: `push rsi; push rdi; push rbx`) — this is the site shipped for
+`win32-x64`. The site length changes per arch, which is fine: `expect`/`write` only need to
+match each other.
 
 **Runners.** `macos-14` (free on public repos) has `unzip`, `zip`, `codesign`, `dwarfdump`,
 `otool`, `xcrun llvm-objdump`, `python3`. `ubuntu-latest` is used only for pass-through and
-publishing. Windows binaries can be patched on any runner once the PE offset translation
-exists; there is no signing step. The Windows probe runs on `windows-latest`; it sends Esc
-via PowerShell `SendKeys`.
+publishing. `win32-x64` is patched on the same `macos-14` runner as the Mach-O platforms
+(the PE offset translation is pure Python, no Windows toolchain needed); there is no signing
+step. The Windows probe runs on `windows-latest`; it sends Esc via PowerShell `SendKeys`.
 
 **Codesign identity after ad-hoc re-signing.** The ad-hoc re-sign changes the framework's
 codesign identifier (from `Electron Framework` to a hash-suffixed one) and drops the
