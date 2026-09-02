@@ -312,5 +312,97 @@ class ReleaseNotes(unittest.TestCase):
         self.assertEqual(section, "- `win32-x64`")
 
 
+import struct
+
+
+def make_pe(sections, guid=b"\x6b\xd6\x76\xe5\xe1\x49\x88\x36\x4c\x4c\x44\x20\x50\x44\x42\x2e", age=1, image_base=0x140000000):
+    """A minimal PE32+ image: DOS stub, COFF header, optional header with a debug
+    directory, section table, then each section's raw bytes at its rawoff.
+    `sections` = [(name, rva, raw_bytes)]. The RSDS debug record lives inside the
+    first section's raw data at its start (raw bytes must leave room: 24 bytes)."""
+    n = len(sections)
+    e_lfanew = 0x80
+    opt_size = 240
+    sec_table = e_lfanew + 4 + 20 + opt_size
+    headers_end = sec_table + 40 * n
+    # Lay sections out on 0x200 boundaries after the headers.
+    layout, rawoff = [], (headers_end + 0x1FF) & ~0x1FF
+    for name, rva, raw in sections:
+        rawsize = (len(raw) + 0x1FF) & ~0x1FF
+        layout.append((name, rva, raw, rawoff, rawsize))
+        rawoff += rawsize
+    total = rawoff
+    buf = bytearray(total)
+    buf[0:2] = b"MZ"
+    struct.pack_into("<I", buf, 0x3C, e_lfanew)
+    buf[e_lfanew : e_lfanew + 4] = b"PE\0\0"
+    struct.pack_into("<HHIIIHH", buf, e_lfanew + 4, 0x8664, n, 0, 0, 0, opt_size, 0x22)
+    opt = e_lfanew + 24
+    struct.pack_into("<H", buf, opt, 0x20B)  # PE32+
+    struct.pack_into("<Q", buf, opt + 24, image_base)
+    struct.pack_into("<I", buf, opt + 32, 0x1000)  # SectionAlignment
+    struct.pack_into("<I", buf, opt + 36, 0x200)  # FileAlignment
+    struct.pack_into("<I", buf, opt + 108, 16)  # NumberOfRvaAndSizes
+    # Debug directory (index 6) points at one IMAGE_DEBUG_DIRECTORY entry we place
+    # right after the RSDS record in section 0: record at +0, entry at +32.
+    first_name, first_rva, first_raw, first_rawoff, _ = layout[0]
+    debug_dir_rva = first_rva + 32
+    struct.pack_into("<II", buf, opt + 112 + 6 * 8, debug_dir_rva, 28)
+    for i, (name, rva, raw, off, rawsize) in enumerate(layout):
+        o = sec_table + 40 * i
+        buf[o : o + 8] = name.encode().ljust(8, b"\0")
+        struct.pack_into("<IIII", buf, o + 8, len(raw), rva, rawsize, off)
+        buf[off : off + len(raw)] = raw
+    # RSDS record: "RSDS" + GUID(16) + age(4) + "x.pdb\0"
+    rsds = b"RSDS" + guid + struct.pack("<I", age) + b"electron.exe.pdb\0"
+    buf[first_rawoff : first_rawoff + len(rsds)] = rsds
+    # IMAGE_DEBUG_DIRECTORY: Characteristics, TimeDateStamp, Major, Minor, Type=2 (CODEVIEW), SizeOfData, AddressOfRawData, PointerToRawData
+    struct.pack_into("<IIHHIIII", buf, first_rawoff + 32, 0, 0, 0, 0, 2, len(rsds), first_rva, first_rawoff)
+    return bytes(buf)
+
+
+class PEHelpers(unittest.TestCase):
+    def setUp(self):
+        self.pe = make_pe([
+            (".text", 0x1000, b"\0" * 64 + bytes.fromhex("565753") + b"\x90" * 61),
+            (".rsrc", 0x3000, b"R" * 100),
+        ])
+        self.sections = gamepatch.pe_sections(self.pe)
+
+    def test_sections_parse_in_order(self):
+        self.assertEqual([s["name"] for s in self.sections], [".text", ".rsrc"])
+        self.assertEqual(self.sections[0]["rva"], 0x1000)
+        self.assertEqual(self.sections[0]["rawoff"], 0x200)
+        self.assertEqual(self.sections[1]["rva"], 0x3000)
+        self.assertEqual(self.sections[1]["rawoff"], 0x400)
+
+    def test_image_base(self):
+        self.assertEqual(gamepatch.pe_image_base(self.pe), 0x140000000)
+
+    def test_rva_to_offset_inside_each_section(self):
+        self.assertEqual(gamepatch.pe_rva_to_offset(self.sections, 0x1040), 0x240)
+        self.assertEqual(gamepatch.pe_rva_to_offset(self.sections, 0x3005), 0x405)
+        self.assertEqual(self.pe[0x240:0x243], bytes.fromhex("565753"))
+
+    def test_rva_in_a_gap_raises(self):
+        with self.assertRaises(ValueError):
+            gamepatch.pe_rva_to_offset(self.sections, 0x2000)
+        with self.assertRaises(ValueError):
+            gamepatch.pe_rva_to_offset(self.sections, 0x0)
+
+    def test_offset_to_rva_roundtrips(self):
+        self.assertEqual(gamepatch.pe_offset_to_rva(self.sections, 0x240), 0x1040)
+        with self.assertRaises(ValueError):
+            gamepatch.pe_offset_to_rva(self.sections, 0x10)
+
+    def test_codeview_id_matches_breakpad_format(self):
+        # GUID {e576d66b-49e1-3688-4c4c-44205044422e} age 1 → Breakpad "E576D66B49E136884C4C44205044422E1"
+        self.assertEqual(gamepatch.pe_codeview_id(self.pe), "E576D66B49E136884C4C44205044422E1")
+
+    def test_not_pe_raises(self):
+        with self.assertRaises(ValueError):
+            gamepatch.pe_sections(b"\xcf\xfa\xed\xfe" + b"\0" * 64)
+
+
 if __name__ == "__main__":
     unittest.main()
