@@ -53,8 +53,18 @@ runs:
         set -euo pipefail
         test/probe/run.sh "$PWD/work/darwin-arm64/patched/Electron.app" | tee probe.json
         echo "--- stock control (must FAIL; proves the probe can tell them apart on this runner)"
-        if test/probe/run.sh "$PWD/work/darwin-arm64/stock/Electron.app"; then
+        set +e
+        test/probe/run.sh "$PWD/work/darwin-arm64/stock/Electron.app"
+        rc=$?
+        set -e
+        # Only exit code 1 ("ran and failed") is a control. 0 means the runner delivered no
+        # keystrokes; 2 (timeout) and 3 (keystroke command failed) mean the probe never got to
+        # measure anything, so a stock "failure" would prove nothing about the patched pass.
+        if [ "$rc" -eq 0 ]; then
           echo "stock passed the probe: the runner is not delivering real keystrokes, result is meaningless" >&2; exit 1
+        fi
+        if [ "$rc" -ne 1 ]; then
+          echo "stock control inconclusive (exit $rc: timeout or keystroke failure)" >&2; exit 1
         fi
     - name: upload probe result
       uses: actions/upload-artifact@v4

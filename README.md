@@ -26,9 +26,12 @@ the mirror at us never breaks an install on a platform we have not patched yet. 
 artifacts (`chromedriver-*`, `ffmpeg-*`, `mksnapshot-*`, headers, hunspell) are not mirrored;
 tools that resolve them from `electron_mirror` must keep using upstream.
 
-Re-cuts: when a platform becomes patched for an already-published version, its zip and
-`SHASUMS256.txt` are replaced under the same tag and the release notes say so; verify with
-remote checksums as documented.
+Re-cuts: when a platform becomes patched for an already-published version, the tag is re-cut
+and **all** of that version's assets are replaced — every zip and `SHASUMS256.txt` — with the
+release notes saying why. A patched platform's zip digest can change even when its binary does
+not: the zip embeds build-time mtimes, so rebuilding produces different bytes around identical
+contents. **Never pin a zip digest.** Always re-read `SHASUMS256.txt` from the release, which is
+what the `electron` package does for you with `electron_use_remote_checksums=1`.
 
 ## Patches
 
@@ -61,6 +64,16 @@ cmp -l "ours/Electron.app/Contents/Frameworks/Electron Framework.framework/Versi
 The differing bytes are: the eight bytes of the patch, the `LC_CODE_SIGNATURE` load command's
 `datasize` field and the `__LINKEDIT` segment's `vmsize`/`filesize` fields in the header, and
 the code-signature blob at the end of the file.
+
+On Windows there is no signature and nothing else moves, so the diff is the patch and only the
+patch — exactly three bytes:
+
+```sh
+unzip -q electron-v44.1.1-win32-x64.zip -d ours-win && unzip -q <upstream zip> -d theirs-win
+cmp -l ours-win/electron.exe theirs-win/electron.exe
+```
+prints exactly three lines, at file offsets 130361889–130361891 (`cmp` counts from 1), where
+`565753` becomes `31c0c3`.
 
 ## Building from source instead
 
