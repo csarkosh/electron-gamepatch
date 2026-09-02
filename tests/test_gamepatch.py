@@ -163,6 +163,28 @@ class ReleaseNotes(unittest.TestCase):
         self.assertIn("`win32-x64`", notes)
         self.assertIn("electron_use_remote_checksums=1", notes)
 
+    def test_notes_cli_filters_passthrough_by_version(self):
+        dist = Path(tempfile.mkdtemp())
+        (dist / "electron-v44.1.1-darwin-arm64.zip").write_bytes(b"")
+        (dist / "electron-v44.1.1-win32-x64.zip").write_bytes(b"")
+        (dist / "electron-v9.0.0-linux-x64.zip").write_bytes(b"")
+        (dist / "electron-v44.1.1-darwin-arm64.patches.json").write_text(json.dumps({
+            "version": "44.1.1",
+            "platform": "darwin-arm64",
+            "patches": [{"name": "pointerlock-noeject", "binary": "x", "sites": []}],
+        }))
+        patches_root = Path(__file__).parents[1] / "patches"
+        notes = gamepatch.notes("44.1.1", patches_root, dist)
+        self.assertIn("`win32-x64`", notes)
+        self.assertNotIn("9.0.0", notes)
+        self.assertNotIn("linux-x64", notes)
+        # The pass-through section must list exactly `win32-x64` and nothing else — this is
+        # the precise, sound version of "not corrupted by a stale zip's mis-sliced platform
+        # name": a plain assertNotIn("in32", notes) is unsound here because the correct,
+        # uncorrupted string "`win32-x64`" itself contains "in32" as a substring.
+        section = notes.split("## Pass-through (unmodified upstream)\n\n", 1)[1].split("\n\n## Use", 1)[0]
+        self.assertEqual(section, "- `win32-x64`")
+
 
 if __name__ == "__main__":
     unittest.main()

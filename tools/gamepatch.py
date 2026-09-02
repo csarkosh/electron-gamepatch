@@ -124,7 +124,7 @@ import zipfile
 
 UPSTREAM_DOWNLOAD = "https://github.com/electron/electron/releases/download"
 UPSTREAM_API = "https://api.github.com/repos/electron/electron/releases/tags"
-_PLATFORM_ZIP = re.compile(r"^electron-v(?P<v>[^-]+)-(darwin|mas|win32|linux)-[a-z0-9]+\.zip$")
+_PLATFORM_ZIP = re.compile(r"^electron-v(?P<v>[^-]+)-(?P<platform>(darwin|mas|win32|linux)-[a-z0-9]+)\.zip$")
 
 
 def log(msg: str) -> None:
@@ -349,8 +349,8 @@ def notes(version: str, patches_root: Path, dist: Path) -> str:
     platforms = []
     for p in sorted(dist.glob("*.zip")):
         m = _PLATFORM_ZIP.match(p.name)
-        if m:
-            platforms.append(p.name[len(f"electron-v{version}-") : -len(".zip")])
+        if m and m.group("v") == version:
+            platforms.append(m.group("platform"))
     passthrough_platforms = [p for p in platforms if p not in patched]
     return release_notes(version, patched, passthrough_platforms, load_patches(patches_root))
 
