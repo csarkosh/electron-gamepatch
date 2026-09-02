@@ -1,0 +1,114 @@
+name: release
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Electron version to republish, e.g. 44.1.1 (empty = whatever upstream released that we have not)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      versions: ${{ steps.plan.outputs.versions }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED: ${{ inputs.version }}
+        run: |
+          set -eu
+          if [ -n "$REQUESTED" ]; then
+            echo "versions=[\"$REQUESTED\"]" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          gh release list -R electron/electron --exclude-pre-releases --limit 200 --json tagName -q '.[].tagName' > upstream.txt
+          gh release list -R "$GITHUB_REPOSITORY" --limit 200 --json tagName -q '.[].tagName' > ours.txt || : > ours.txt
+          versions=$(python3 tools/release_plan.py upstream.txt ours.txt)
+          echo "plan: $versions"
+          echo "versions=$versions" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: plan
+    if: needs.plan.outputs.versions != '[]'
+    runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ${{ fromJson(needs.plan.outputs.versions) }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: skip if already released
+        id: exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "v${{ matrix.version }}" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "released=true" >> "$GITHUB_OUTPUT"; echo "v${{ matrix.version }} already released; skipping"
+          else
+            echo "released=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: gate — unit, build, verify, integration suite, probe (same action as ci.yml)
+        if: steps.exists.outputs.released == 'false'
+        uses: ./.github/actions/gate
+        with:
+          version: ${{ matrix.version }}
+      - uses: actions/upload-artifact@v4
+        if: steps.exists.outputs.released == 'false'
+        with:
+          name: dist-${{ matrix.version }}
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    needs: [plan, build]
+    runs-on: ubuntu-latest
+    strategy:
+      max-parallel: 1
+      matrix:
+        version: ${{ fromJson(needs.plan.outputs.versions) }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: skip if already released
+        id: exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "v${{ matrix.version }}" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "released=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "released=false" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/download-artifact@v4
+        if: steps.exists.outputs.released == 'false'
+        with:
+          name: dist-${{ matrix.version }}
+          path: dist/
+      - name: pass-through, checksums, notes
+        if: steps.exists.outputs.released == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          python3 tools/gamepatch.py passthrough --version "${{ matrix.version }}"
+          python3 tools/gamepatch.py shasums > dist/SHASUMS256.txt
+          python3 tools/gamepatch.py notes --version "${{ matrix.version }}" > notes.md
+          cat dist/SHASUMS256.txt
+      - name: publish release
+        if: steps.exists.outputs.released == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          gh release create "v${{ matrix.version }}" -R "$GITHUB_REPOSITORY" \
+            --title "Electron v${{ matrix.version }}, game-patched" \
+            --notes-file notes.md \
+            dist/*.zip dist/SHASUMS256.txt
