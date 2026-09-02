@@ -1,0 +1,38 @@
+name: gate
+description: "Unit tests, build, verify, integration suite and behavioural probe for one Electron version. Leaves dist/."
+inputs:
+  version:
+    description: "Electron version, e.g. 44.1.1"
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: cache upstream downloads
+      uses: actions/cache@v4
+      with:
+        path: cache
+        key: upstream-${{ inputs.version }}-darwin-arm64
+    - name: unit tests
+      shell: bash
+      run: python3 -m unittest discover -s tests -v
+    - name: build darwin-arm64
+      shell: bash
+      run: python3 tools/gamepatch.py build --version "${{ inputs.version }}" --platform darwin-arm64
+    - name: verify
+      shell: bash
+      run: python3 tools/verify.py --version "${{ inputs.version }}" --platform darwin-arm64
+    - name: integration suite (pipeline + consumer contract)
+      shell: bash
+      env:
+        GAMEPATCH_PIN: ${{ inputs.version }}
+        GH_TOKEN: ${{ github.token }}
+      run: python3 -m unittest discover -s tests/integration -v -t .
+    - name: behavioural probe (blocking)
+      shell: bash
+      run: |
+        set -eu
+        test/probe/run.sh "$PWD/work/darwin-arm64/patched/Electron.app" | tee probe.json
+        echo "--- stock control (must FAIL; proves the probe can tell them apart on this runner)"
+        if test/probe/run.sh "$PWD/work/darwin-arm64/stock/Electron.app"; then
+          echo "stock passed the probe: the runner is not delivering real keystrokes, result is meaningless" >&2; exit 1
+        fi

@@ -1,0 +1,21 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - id: pin
+        # The pinned version is the default in test_pipeline.py: PIN = os.environ.get("GAMEPATCH_PIN", "44.1.1")
+        run: echo "version=$(sed -n 's/.*GAMEPATCH_PIN", "\([0-9.]*\)".*/\1/p' tests/integration/test_pipeline.py)" >> "$GITHUB_OUTPUT"
+      - uses: ./.github/actions/gate
+        with:
+          version: ${{ steps.pin.outputs.version }}
