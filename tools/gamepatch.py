@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import re
+import struct
 from pathlib import Path
 from typing import Callable, Iterable
 
@@ -47,9 +48,13 @@ def resolve_symbol(funcs: dict[str, list[tuple[int, int]]], name: str) -> tuple[
     return matches[0]
 
 
-def apply_sites(data: bytearray, sites: list[dict], resolve: Callable[[str], tuple[int, int]]) -> list[dict]:
-    """Patch every site into `data` (file offsets == symbol addresses) and return a record per site.
+def apply_sites(data: bytearray, sites: list[dict], resolve: Callable[[str], tuple[int, int]],
+                to_vaddr: Callable[[int], int] = lambda offset: offset) -> list[dict]:
+    """Patch every site into `data` and return a record per site.
 
+    `resolve(symbol)` returns (file offset, size) of the function; `to_vaddr(offset)` maps a
+    file offset back to the virtual address a disassembler wants (identity for Mach-O, whose
+    __TEXT is at vmaddr 0 / fileoff 0; section translation for PE).
     Every site is checked before any byte is written, so a bad `expect` leaves `data` untouched.
     """
     planned = []
@@ -68,7 +73,7 @@ def apply_sites(data: bytearray, sites: list[dict], resolve: Callable[[str], tup
     records = []
     for site, offset, expect, write in planned:
         data[offset : offset + len(write)] = write
-        records.append({"symbol": site["symbol"], "offset": offset, "length": len(write),
+        records.append({"symbol": site["symbol"], "offset": offset, "vaddr": to_vaddr(offset), "length": len(write),
                         "old": expect.hex(), "new": write.hex(), "asm": list(site["asm"])})
     return records
 
@@ -114,6 +119,92 @@ def parse_shasums(text: str) -> dict[str, str]:
             sha, name = line.split(maxsplit=1)
             entries[name.lstrip("*").strip()] = sha
     return entries
+
+
+def _pe_headers(data: bytes) -> tuple[int, int, int, int]:
+    """(coff_offset, optional_header_offset, number_of_sections, section_table_offset)."""
+    if len(data) < 0x40 or data[:2] != b"MZ":
+        raise ValueError("not a PE file: no MZ header")
+    e_lfanew = struct.unpack_from("<I", data, 0x3C)[0]
+    if data[e_lfanew : e_lfanew + 4] != b"PE\0\0":
+        raise ValueError("not a PE file: no PE signature")
+    coff = e_lfanew + 4
+    try:
+        nsections, opt_size = struct.unpack_from("<H", data, coff + 2)[0], struct.unpack_from("<H", data, coff + 16)[0]
+        opt = coff + 20
+        if struct.unpack_from("<H", data, opt)[0] != 0x20B:
+            raise ValueError("not a PE32+ (64-bit) image")
+    except struct.error as e:
+        raise ValueError(f"truncated PE: {e}") from e
+    return coff, opt, nsections, opt + opt_size
+
+
+def pe_sections(data: bytes) -> list[dict]:
+    """The section table: name, rva, vsize, rawoff, rawsize — in file order."""
+    _, _, n, table = _pe_headers(data)
+    sections = []
+    try:
+        for i in range(n):
+            o = table + 40 * i
+            name = data[o : o + 8].rstrip(b"\0").decode("latin-1")
+            vsize, rva, rawsize, rawoff = struct.unpack_from("<IIII", data, o + 8)
+            sections.append({"name": name, "rva": rva, "vsize": vsize, "rawoff": rawoff, "rawsize": rawsize})
+    except struct.error as e:
+        raise ValueError(f"truncated PE: {e}") from e
+    return sections
+
+
+def pe_image_base(data: bytes) -> int:
+    _, opt, _, _ = _pe_headers(data)
+    try:
+        return struct.unpack_from("<Q", data, opt + 24)[0]
+    except struct.error as e:
+        raise ValueError(f"truncated PE: {e}") from e
+
+
+def pe_rva_to_offset(sections: list[dict], rva: int) -> int:
+    """File offset of a virtual address, through the section that contains it."""
+    for s in sections:
+        if s["rva"] <= rva < s["rva"] + max(s["vsize"], s["rawsize"]):
+            return rva - s["rva"] + s["rawoff"]
+    raise ValueError(f"RVA {rva:#x} is not inside any section")
+
+
+def pe_offset_to_rva(sections: list[dict], offset: int) -> int:
+    for s in sections:
+        if s["rawoff"] <= offset < s["rawoff"] + s["rawsize"]:
+            return offset - s["rawoff"] + s["rva"]
+    raise ValueError(f"file offset {offset:#x} is not inside any section")
+
+
+def pe_codeview_id(data: bytes) -> str:
+    """The Breakpad module id of a PE: the RSDS CodeView GUID (first three fields
+    byte-swapped, as Breakpad prints them) followed by the age in upper-case hex."""
+    _, opt, _, _ = _pe_headers(data)
+    try:
+        nrva = struct.unpack_from("<I", data, opt + 108)[0]
+        if nrva <= 6:
+            raise ValueError("no debug directory")
+        debug_rva, debug_size = struct.unpack_from("<II", data, opt + 112 + 6 * 8)
+        if debug_size == 0:
+            raise ValueError("empty debug directory")
+        sections = pe_sections(data)
+        off = pe_rva_to_offset(sections, debug_rva)
+        for i in range(debug_size // 28):
+            entry = off + 28 * i
+            kind, size, _, raw = struct.unpack_from("<IIII", data, entry + 12)
+            if kind != 2:  # IMAGE_DEBUG_TYPE_CODEVIEW
+                continue
+            rec = data[raw : raw + size]
+            if rec[:4] != b"RSDS":
+                raise ValueError("CodeView record is not RSDS")
+            d1, d2, d3 = struct.unpack_from("<IHH", rec, 4)
+            rest = rec[12:20].hex().upper()
+            age = struct.unpack_from("<I", rec, 20)[0]
+            return f"{d1:08X}{d2:04X}{d3:04X}{rest}{age:X}"
+    except struct.error as e:
+        raise ValueError(f"truncated PE: {e}") from e
+    raise ValueError("no CodeView entry in the debug directory")
 
 
 # ---------------------------------------------------------------- IO layer
@@ -286,13 +377,58 @@ def codesign_adhoc(binaries: list[Path]) -> None:
             shutil.rmtree(scratch, ignore_errors=True)
 
 
+class _MachO:
+    name, signs = "macho", True
+
+    def open(self, data: bytes):
+        return None
+
+    def check_binary(self, binary: Path) -> None:
+        assert_text_at_zero(binary)
+
+    def identity_of(self, binary: Path, data: bytes) -> str:
+        return sym_module_id_from_uuid(macho_uuid(binary))
+
+    def to_offset(self, ctx, address: int) -> int:
+        return address
+
+    def to_vaddr(self, ctx, offset: int) -> int:
+        return offset
+
+
+class _PE:
+    name, signs = "pe", False
+
+    def open(self, data: bytes):
+        return pe_sections(data)
+
+    def check_binary(self, binary: Path) -> None:
+        pass
+
+    def identity_of(self, binary: Path, data: bytes) -> str:
+        return pe_codeview_id(data)
+
+    def to_offset(self, sections, rva: int) -> int:
+        return pe_rva_to_offset(sections, rva)
+
+    def to_vaddr(self, sections, offset: int) -> int:
+        return pe_offset_to_rva(sections, offset)
+
+
+def binary_format(platform: str):
+    if platform.startswith("darwin-") or platform.startswith("mas-"):
+        return _MachO()
+    if platform.startswith("win32-"):
+        return _PE()
+    raise SystemExit(f"{platform}: only darwin-*/mas-* (Mach-O) and win32-* (PE) builds are implemented")
+
+
 def build(version: str, platform: str, patches_root: Path, cache: Path, work: Path, dist: Path) -> Path:
     """Produce dist/electron-v<version>-<platform>.zip with every patch that targets `platform`."""
     targets = [(p, p["targets"][platform]) for p in load_patches(patches_root) if platform in p["targets"]]
     if not targets:
         raise SystemExit(f"no patch targets {platform}; it is a pass-through platform")
-    if not platform.startswith("darwin-"):
-        raise SystemExit(f"{platform}: only darwin-* builds are implemented (signing, Mach-O checks)")
+    fmt = binary_format(platform)
 
     zip_name = f"electron-v{version}-{platform}.zip"
     stock_zip = fetch_upstream(version, zip_name, cache)
@@ -310,21 +446,28 @@ def build(version: str, platform: str, patches_root: Path, cache: Path, work: Pa
 
     for rel_binary, group in by_binary.items():
         binary = patched / rel_binary
-        assert_text_at_zero(binary)
+        fmt.check_binary(binary)
         with open_sym(symbols_zip, binary.name) as sym:
             module_id, funcs = parse_sym(sym)
-        uuid = macho_uuid(binary)
-        if sym_module_id_from_uuid(uuid) != module_id:
-            raise ValueError(f"{binary.name}: UUID {uuid} does not match symbols MODULE {module_id}")
         data = bytearray(binary.read_bytes())
+        ctx = fmt.open(bytes(data))
+        identity = fmt.identity_of(binary, bytes(data))
+        if identity != module_id:
+            raise ValueError(f"{binary.name}: binary identity {identity} does not match symbols MODULE {module_id}")
+
+        def resolve(name: str, funcs=funcs, ctx=ctx) -> tuple[int, int]:
+            address, size = resolve_symbol(funcs, name)
+            return fmt.to_offset(ctx, address), size
+
         for patch, target in group:
-            sites = apply_sites(data, target["sites"], lambda name: resolve_symbol(funcs, name))
+            sites = apply_sites(data, target["sites"], resolve, to_vaddr=lambda off, ctx=ctx: fmt.to_vaddr(ctx, off))
             for s in sites:
-                log(f"{patch['name']}: {s['symbol']} @ {s['offset']:#x}: {s['old']} -> {s['new']}")
+                log(f"{patch['name']}: {s['symbol']} @ {s['offset']:#x} (vaddr {s['vaddr']:#x}): {s['old']} -> {s['new']}")
             record["patches"].append({"name": patch["name"], "binary": rel_binary, "sites": sites})
         binary.write_bytes(bytes(data))
 
-    codesign_adhoc([patched / rel_binary for rel_binary in by_binary])
+    if fmt.signs:
+        codesign_adhoc([patched / rel_binary for rel_binary in by_binary])
     out_zip = dist / zip_name
     rezip(patched, out_zip)
     (dist / f"electron-v{version}-{platform}.patches.json").write_text(json.dumps(record, indent=2) + "\n")
@@ -397,12 +540,12 @@ def shasums(dist: Path) -> str:
     return format_shasums({p.name: sha256_file(p) for p in sorted(dist.glob("*.zip"))})
 
 
-def release_notes(version: str, patched: dict[str, list[str]], passthrough_platforms: list[str], patches: list[dict]) -> str:
+def release_notes(version: str, patched: dict[str, list[str]], passthrough_platforms: list[str], patches: list[dict], recut_note: str | None = None) -> str:
     summaries = {p["name"]: p["summary"] for p in patches}
     lines = [
         f"Republishes [Electron v{version}](https://github.com/electron/electron/releases/tag/v{version}) "
         "with game-oriented byte patches. Byte-identical to upstream except the documented patch sites "
-        "and the ad-hoc code signature that re-signing them requires.",
+        "and, on macOS, the ad-hoc code signature that re-signing them requires.",
         "",
         "## Patched",
     ]
@@ -423,10 +566,12 @@ def release_notes(version: str, patched: dict[str, list[str]], passthrough_platf
         "",
         f"Then `npm install electron@{version}`.",
     ]
+    if recut_note:
+        lines += ["", "---", "", recut_note]
     return "\n".join(lines) + "\n"
 
 
-def notes(version: str, patches_root: Path, dist: Path) -> str:
+def notes(version: str, patches_root: Path, dist: Path, recut_note: str | None = None) -> str:
     patched: dict[str, list[str]] = {}
     for rec_path in sorted(dist.glob("*.patches.json")):
         rec = json.loads(rec_path.read_text())
@@ -437,7 +582,7 @@ def notes(version: str, patches_root: Path, dist: Path) -> str:
         if m and m.group("v") == version:
             platforms.append(m.group("platform"))
     passthrough_platforms = [p for p in platforms if p not in patched]
-    return release_notes(version, patched, passthrough_platforms, load_patches(patches_root))
+    return release_notes(version, patched, passthrough_platforms, load_patches(patches_root), recut_note=recut_note)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -455,6 +600,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("shasums", help="print SHASUMS256.txt for dist/*.zip")
     n = sub.add_parser("notes", help="print release notes for dist/")
     n.add_argument("--version", required=True)
+    n.add_argument("--recut-note", default=None, help="dated re-cut line to append to the notes")
     c = sub.add_parser("check-dist", help="assert dist/ is ready to publish for --version")
     c.add_argument("--version", required=True)
     a = ap.parse_args(argv)
@@ -466,7 +612,7 @@ def main(argv: list[str] | None = None) -> int:
     elif a.cmd == "shasums":
         sys.stdout.write(shasums(a.dist))
     elif a.cmd == "notes":
-        sys.stdout.write(notes(a.version, a.patches, a.dist))
+        sys.stdout.write(notes(a.version, a.patches, a.dist, recut_note=a.recut_note))
     elif a.cmd == "check-dist":
         check_dist(a.version, a.cache, a.dist, a.patches)
     return 0

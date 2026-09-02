@@ -5,7 +5,8 @@
 | darwin-arm64 | patched | `Electron.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Electron Framework` | sign only the patched binary, ad hoc, outside the bundle; never `--deep` (upstream is ad-hoc/linker-signed too). Consumers' `electron-builder` re-signs with their identity. |
 | darwin-x64 | pass-through | same path, x86-64 code | as above |
 | mas-* | pass-through | same path | as above (App Store builds are re-signed by the consumer anyway) |
-| win32-x64 / win32-arm64 / win32-ia32 | pass-through | `electron.exe` and `*.dll` — which binary holds the function is read from the `-symbols.zip` (one `.sym` per module); unverified for Windows | none required to run; Authenticode is the consumer's job |
+| win32-x64 | patched | `electron.exe` | none |
+| win32-arm64 / win32-ia32 | pass-through | `electron.exe` and `*.dll` — which binary holds the function is read from the `-symbols.zip` (one `.sym` per module); unverified for Windows | none required to run; Authenticode is the consumer's job |
 | linux-x64 / linux-arm64 / linux-armv7l | pass-through | `electron` ELF | none |
 
 **Symbols.** Every platform has `electron-v<ver>-<platform>-symbols.zip` with Breakpad
@@ -26,7 +27,8 @@ which is fine: `expect`/`write` only need to match each other.
 **Runners.** `macos-14` (free on public repos) has `unzip`, `zip`, `codesign`, `dwarfdump`,
 `otool`, `xcrun llvm-objdump`, `python3`. `ubuntu-latest` is used only for pass-through and
 publishing. Windows binaries can be patched on any runner once the PE offset translation
-exists; there is no signing step.
+exists; there is no signing step. The Windows probe runs on `windows-latest`; it sends Esc
+via PowerShell `SendKeys`.
 
 **Codesign identity after ad-hoc re-signing.** The ad-hoc re-sign changes the framework's
 codesign identifier (from `Electron Framework` to a hash-suffixed one) and drops the

@@ -11,7 +11,7 @@ runs:
       uses: actions/cache@v4
       with:
         path: cache
-        key: upstream-${{ inputs.version }}-darwin-arm64
+        key: upstream-${{ inputs.version }}-darwin-arm64-win32-x64
     - name: unit tests
       shell: bash
       run: python3 -m unittest discover -s tests -v
@@ -21,6 +21,26 @@ runs:
     - name: verify
       shell: bash
       run: python3 tools/verify.py --version "${{ inputs.version }}" --platform darwin-arm64
+    - name: build win32-x64
+      shell: bash
+      run: python3 tools/gamepatch.py build --version "${{ inputs.version }}" --platform win32-x64
+    - name: verify win32-x64
+      shell: bash
+      run: python3 tools/verify.py --version "${{ inputs.version }}" --platform win32-x64
+    - name: stage win32-x64 zips for the Windows probe
+      shell: bash
+      run: |
+        set -euo pipefail
+        mkdir -p probe-win32
+        cp "dist/electron-v${{ inputs.version }}-win32-x64.zip" probe-win32/patched.zip
+        cp "cache/v${{ inputs.version }}/electron-v${{ inputs.version }}-win32-x64.zip" probe-win32/stock.zip
+    - name: upload win32-x64 for the Windows probe
+      uses: actions/upload-artifact@v4
+      with:
+        name: probe-win32-${{ inputs.version }}
+        path: probe-win32/
+        if-no-files-found: error
+        retention-days: 1
     - name: integration suite (pipeline + consumer contract)
       shell: bash
       env:
