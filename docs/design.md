@@ -122,7 +122,11 @@ any developer machine. For a given version:
 4. Re-sign only the binaries the patch modified: `codesign --force --sign - <binary>` then
    `codesign --verify --strict <binary>`. No `--deep`: upstream is linker-signed with no
    bundle seals, and a deep re-sign would add `_CodeSignature/CodeResources` entries the
-   upstream zip does not have.
+   upstream zip does not have. Signing happens on a copy in a scratch directory outside the
+   bundle tree, then the signed bytes are copied back in place: codesign auto-detects a
+   framework's designated main executable from its neighbours and seals the whole bundle
+   even without `--deep`, so a plain, bundle-free path is required to get a bare embedded
+   signature on the binary alone.
 5. Re-zip with the same top-level layout as upstream (`Electron.app`, `LICENSE`,
    `LICENSES.chromium.html`, `version`), preserving symlinks and modes (`zip -ry`).
 6. Emit `SHASUMS256.txt` covering every asset in the release (patched and pass-through).

@@ -26,7 +26,7 @@ runs:
       env:
         GAMEPATCH_PIN: ${{ inputs.version }}
         GH_TOKEN: ${{ github.token }}
-      run: python3 -m unittest discover -s tests/integration -v -t .
+      run: python3 -m unittest discover -s tests/integration -v
     - name: behavioural probe (blocking)
       shell: bash
       run: |

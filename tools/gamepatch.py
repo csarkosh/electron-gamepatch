@@ -119,6 +119,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import urllib.request
 import zipfile
 
@@ -246,12 +247,25 @@ def rezip(src_dir: Path, zip_path: Path) -> None:
 
 def codesign_adhoc(binaries: list[Path]) -> None:
     """Re-sign only the binaries a patch modified: their linker signature was invalidated by
-    the byte change. No `--deep`: upstream is linker-signed with no bundle seals, and a deep
-    re-sign on the .app would manufacture `_CodeSignature/CodeResources` entries in every
-    nested bundle that the upstream zip does not have."""
+    the byte change. Signing happens OUTSIDE the bundle tree, on a copy in a scratch
+    directory with a plain (non-bundle) path: codesign auto-detects when a path is a
+    framework's designated main executable and seals the whole enclosing bundle (adding
+    `_CodeSignature/CodeResources`, which upstream's zip does not have) even without `--deep`,
+    purely from the binary sitting next to a Resources/Info.plist. Signing a copy that has no
+    such neighbours avoids that; the signed bytes (an embedded LC_CODE_SIGNATURE, nothing
+    else) are then copied back over the original in place."""
     for binary in binaries:
-        run("codesign", "--force", "--sign", "-", str(binary))
-        run("codesign", "--verify", "--strict", str(binary))
+        mode = binary.stat().st_mode
+        scratch = Path(tempfile.mkdtemp(prefix="codesign-"))
+        try:
+            tmp = scratch / binary.name
+            shutil.copyfile(binary, tmp)
+            run("codesign", "--force", "--sign", "-", str(tmp))
+            run("codesign", "--verify", "--strict", str(tmp))
+            shutil.copyfile(tmp, binary)
+            os.chmod(binary, mode)
+        finally:
+            shutil.rmtree(scratch, ignore_errors=True)
 
 
 def build(version: str, platform: str, patches_root: Path, cache: Path, work: Path, dist: Path) -> Path:
