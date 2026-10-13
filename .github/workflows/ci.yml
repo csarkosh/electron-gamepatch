@@ -1,9 +1,10 @@
 name: ci
 
+# Started by hand only (Cyrus, 2026-10-13: runner minutes cost time and money, so
+# nothing runs that nobody asked for). No push and no pull request starts it:
+# `gh workflow run ci.yml --ref <branch>` when a clean-machine run is wanted.
 on:
-  push:
-    branches: [main]
-  pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read

@@ -48,8 +48,9 @@ unsigned upstream and stay unsigned. `tools/verify.py` disassembles the result a
 binary differs from upstream only at the declared sites on every platform; on macOS it also
 checks the signature of the shipped bytes and launches it, while for `win32-*` the launch
 proof is a separate Windows CI leg (`test/probe/`), which measures the effect with a real
-keypress. `.github/workflows/release.yml` does this daily for every new upstream release on
-the tracked (latest stable) major.
+keypress. `.github/workflows/release.yml` does this for every new upstream release on the
+tracked (latest stable) major when it is started by hand (`gh workflow run release.yml`; it ran
+daily until 2026-10-13, and now nothing in this repository runs unasked).
 
 A new Electron whose compiler output changes a patched function fails the byte assertion,
 and nothing is published for that version until a human re-derives the bytes.

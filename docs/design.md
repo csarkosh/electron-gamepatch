@@ -73,7 +73,7 @@ dist/
   electron-v<ver>-<platform>.patches.json  build record for a patched platform: sites, bytes, asm
 .github/
   workflows/
-    release.yml          cron + manual dispatch → plan → build → publish (pass-through, check-dist, SHASUMS, notes)
+    release.yml          manual dispatch only (the daily cron was dropped 2026-10-13) → plan → build → publish (pass-through, check-dist, SHASUMS, notes)
     ci.yml                the same gate action, on every push and PR, against the pinned version
   actions/gate/           composite action: unit tests → build → verify → integration suite → probe
 .agents/                agent onboarding for future patches (see below)
@@ -197,7 +197,7 @@ breaks any of these turns the gate red before it can reach a release.
 
 ## Workflow (`.github/workflows/release.yml`)
 
-- Triggers: daily cron; `workflow_dispatch` with an optional `version` input.
+- Triggers: `workflow_dispatch` only, with an optional `version` input (a daily cron ran it until 2026-10-13; Cyrus wants nothing to run unasked, since runner minutes cost time and money).
 - Job `plan` (ubuntu): list upstream releases on the tracked major, subtract our tags, emit
   the list to build (or the dispatched version).
 - Job `build` (matrix over versions, `macos-14`, free for public repos; needed for

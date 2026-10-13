@@ -1,8 +1,10 @@
 name: release
 
+# Started by hand only (Cyrus, 2026-10-13: no automatic triggers anywhere, runner
+# minutes cost time and money). It used to run daily at 06:17 UTC and publish
+# whatever upstream had released; now a run is asked for, with no inputs to take
+# every upstream release not yet published, or with a version to republish one.
 on:
-  schedule:
-    - cron: "17 6 * * *"
   workflow_dispatch:
     inputs:
       version:
